@@ -1,0 +1,19 @@
+{
+  "name": "@q2fa/backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/auth-encoding.test.ts",
+    "inspect:mainnet": "tsx scripts/inspect-mainnet.ts",
+    "deploy:mainnet": "tsx scripts/deploy-mainnet.ts"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.7.1",
+    "@q2fa/shared": "1.0.0",
+    "dotenv": "^16.6.1",
+    "viem": "^2.38.5"
+  }
+}

@@ -1,0 +1,44 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# Local signing material and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mnemonic
+*.seed
+*.secret
+*.guardian-secret
+*.credentials
+*.credentials.json
+*.wallet.json
+wallet.json
+keystore.json
+credentials/
+secrets/
+deployment-secrets/
+wallet-secrets/
+.aws/
+.ssh/
+.netrc
+.npmrc
+
+npm-debug.log*
+*.log
+
+# Solidity build artifacts and local network state
+contracts/artifacts/
+contracts/cache/
+contracts/coverage/
+contracts/typechain-types/
+contracts/broadcast/
+contracts/out/
+
+# Local-only guardian material and generated deployment records
+.q2fa-local/
