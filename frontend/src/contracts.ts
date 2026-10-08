@@ -1,4 +1,4 @@
-import type { Abi } from "viem";
+import { parseAbiItem, type Abi } from "viem";
 
 export const q2faAccountAbi = [
   { type: "error", name: "NotOwner", inputs: [] },
@@ -6,6 +6,9 @@ export const q2faAccountAbi = [
   { type: "error", name: "InvalidPQSignature", inputs: [] },
   { type: "error", name: "PQVerifierUnavailable", inputs: [] },
   { type: "error", name: "InvalidPQSignatureLength", inputs: [{ name: "actualLength", type: "uint256" }] },
+  { type: "error", name: "ZeroRecipient", inputs: [] },
+  { type: "error", name: "ZeroAmount", inputs: [] },
+  { type: "error", name: "USDCTransferFailed", inputs: [] },
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "guardianKey", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
@@ -45,6 +48,11 @@ export const q2faAccountAbi = [
     outputs: [],
   },
 ] as const satisfies Abi;
+
+export const withdrawalEvent = parseAbiItem("event Withdrawal(address indexed recipient, uint256 amount, uint256 indexed nonce)");
+export const ownerChangedEvent = parseAbiItem("event OwnerChanged(address indexed previousOwner, address indexed newOwner, uint256 indexed nonce)");
+export const guardianChangedEvent = parseAbiItem("event GuardianChanged(bytes32 previousKey, bytes32 newKey, uint256 indexed nonce)");
+export const usdcTransferEvent = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
 
 export const arcUsdcAbi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }] },

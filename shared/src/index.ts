@@ -5,6 +5,7 @@ export const ARC_RPC_URL = "https://rpc.mainnet.arc.io";
 export const ARC_PQ_VERIFIER = "0x1800000000000000000000000000000000000004" as Address;
 export const ARC_USDC = "0x3600000000000000000000000000000000000000" as Address;
 export const Q2FA_ACCOUNT = "0xa40524d1e9380d3b82752ec4bc074cc7e6272fb0" as Address;
+export const Q2FA_DEPLOYMENT_BLOCK = 24_896_834n;
 export const WALLET_A = "0x90e3a58694e953f5eC4018fF7dd57BE036f11FcE" as Address;
 export const WALLET_B = "0x815C2fb8178F0bf80aDa8C5B97fF44Ece90e6e25" as Address;
 export const PQ_PUBLIC_KEY_BYTES = 32;

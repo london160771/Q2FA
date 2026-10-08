@@ -6,9 +6,26 @@
 
 **Phase 2 clean redeploy: PASS — complete.** The original Phase 1/early Phase 2 account `0xc27bd794db0e7d2cf636fbd7872d05e92cc295d2` remains an abandoned development deployment and must not be used. The fresh account below completed guardian backup/restore, deposit, read-only simulations, and protected withdrawal to Wallet B.
 
+**Phase 3 — Dashboard: PASS.** Activity reads real Arc Mainnet logs through bounded, topic-filtered direct RPC pages. Both live Security Demo simulations were verified against the deployed account using read-only `eth_call`; the EVM-only attempt was blocked and the active guardian authorization was accepted. No Mainnet transaction was sent during Phase 3 verification.
+
+## Phase 3 Dashboard — Complete
+
+- Implemented the four requested dashboard sections: Security Overview, Send USDC, Activity, and Security Demo. The overview reads owner, guardian, nonce, and protected USDC balance live from the deployed account and Arc Mainnet. It explains the two required factors and warns that funds in the normal wallet are not protected.
+- Preserved the local guardian seed import flow. The client derives the guardian locally, compares it with the live onchain key, rejects a mismatch, and keeps imported material in memory only. No browser storage or backend custody was added.
+- The send flow uses the shared canonical authorization encoding, presents the action details, signs with the imported guardian, simulates and estimates before submission, and displays the estimated/actual Arc fee in USDC. Wrong network and non-owner wallet states gate protected submission. The UI does not hardcode Wallet B as the main recipient.
+- Added an onchain Activity feed for deposits, protected withdrawals, owner changes, and guardian changes. The RPC returns `-32012: requested range too large` for one request spanning deployment block `24896834` through the current head. One-block and 100-block reads succeed; exact-topic reads over 10,000-block pages also succeed. The client now scans from deployment in up-to-10,000-block pages, filters by the Q2FA address and event topics (and USDC `Transfer` with the Q2FA address as recipient), adds a 750ms gap between pages, halves pages on range-limit errors, and retries rate limits.
+- The updated Activity view displayed verified Mainnet data: the `0.000001 USDC` deposit at block `24906205` (transaction `0x250b846795c302a8dd67c5b46063379d6527a85196e91771d5ac1d36c2e95c26`) and protected withdrawal at block `24906981` (transaction `0xb883911a18724ef6a31ed6f9ca3f54a13847ca5413b2efcd69fa18eb76e2e56a`). The feed resolved actual receipts, timestamps, and gas fees. No activity was hardcoded and no database was added.
+- Public indexer fallback checks: Arc Explorer API requests returned HTTP 403; Arcscan's public API returned HTTP 530 (Cloudflare tunnel unavailable). No paid service, API key, or indexer dependency was added.
+- Split the Security Demo into independent buttons so the missing-guardian case can be run before restore. The live read-only stolen-wallet simulation used Wallet A as `msg.sender` and an empty PQ signature; Arc rejected it with `InvalidPQSignatureLength(0)`. The live two-factor simulation used the guardian imported in the browser, signed the exact current `CHANGE_GUARDIAN` payload, and returned **AUTHORIZED** from Arc Mainnet `eth_call`. The same-key authorization was simulated only; no transaction was submitted. Onchain nonce remained `1` and guardian key remained unchanged after both simulations. The seed was not read, accessed, or exposed by this task.
+- Added dashboard logic/component tests. `npm run check` passed after the code changes: 15 frontend tests, 2 backend tests, and 26 Solidity tests passed, along with workspace typechecks and production builds. Vite emitted a size warning for the main minified JavaScript chunk (~563 KB, ~173 KB gzip); guardian crypto remains in a separate lazy-loaded chunk.
+- Manually inspected desktop and 375px mobile layouts. At 375px, both Activity entries fit with no horizontal overflow; the Security Demo cards stack, buttons fit, and the document width remains 375px.
+- No paid Mainnet transaction was submitted. No secrets were read, persisted, or exposed. No database or contract behavior was added.
+
+Phase 3 verification is complete. No unresolved critical or high security issue was found in this phase. The main JavaScript bundle size warning remains a non-blocking optimization item; guardian cryptography is lazy-loaded separately. The guardian seed remains user-managed and memory-only in the client.
+
 ## Phase 2 Clean Redeploy — Complete
 
-- Result: **PASS**. Phase 2 is complete; the next phase is Phase 3 — Dashboard.
+- Result: **PASS**. Phase 2 is complete; its next planned phase was Phase 3 — Dashboard.
 - The old account `0xc27bd794db0e7d2cf636fbd7872d05e92cc295d2` remains an abandoned development deployment. It was not recovered, weakened, reused, or redeployed over.
 - A fresh SLH-DSA-SHA2-128s guardian was generated locally. Its seed was backed up outside source control before deployment, then restored and verified to reproduce the same public key. A local sign/verify round-trip passed. The active guardian seed remains outside source control; no secrets were committed.
 - New guardian public key: `0xe2234e490c1a42c30104d059aad16473811694a715a33f31d8c8a0a9dabe4566`.
@@ -36,14 +53,14 @@
 ## Repository Structure Created
 
 ```text
-frontend/   React, TypeScript, Vite, lightweight injected-wallet connector
+frontend/   React, TypeScript, Vite, live Arc dashboard and lightweight injected-wallet connector
 backend/    Node.js/TypeScript, Arc RPC helpers, read-only inspector, local deploy/probe script
 contracts/  Solidity account, interfaces, Hardhat tests/configuration
 shared/     Arc Mainnet constants and deterministic authorization encoding
 scripts/    Preserved Phase 0 script
 ```
 
-Root npm workspaces coordinate the four packages. The frontend is a minimal placeholder only. There is no database, server authentication, hosted service, proxy, or frontend dashboard.
+Root npm workspaces coordinate the four packages. The frontend now contains the Phase 3 dashboard. There is no database, server authentication, hosted service, or proxy.
 
 ## Contract Architecture Implemented
 
@@ -106,4 +123,4 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 
 ## Exact Next Phase
 
-**Phase 3 — Dashboard.** Phase 2 is complete; begin Phase 3 only after review and explicit instruction.
+**Phase 3 is complete. Next: Phase 4, only after separate authorization. Phase 4 has not started.**

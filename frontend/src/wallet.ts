@@ -19,6 +19,11 @@ export interface ConnectedWallet {
   walletClient: ReturnType<typeof createWalletClient>;
 }
 
+export function walletClientForAddress(address: Address, provider = window.ethereum): ConnectedWallet["walletClient"] {
+  if (!provider) throw new Error("No injected EVM wallet was detected in this browser.");
+  return createWalletClient({ account: address, chain: arcMainnet, transport: custom(provider) });
+}
+
 export async function connectArcMainnetWallet(): Promise<ConnectedWallet> {
   const provider = window.ethereum;
   if (!provider) throw new Error("No injected EVM wallet was detected in this browser.");
@@ -28,12 +33,10 @@ export async function connectArcMainnetWallet(): Promise<ConnectedWallet> {
     throw new Error("The wallet did not return an account.");
   }
 
-  await switchToArcMainnet(provider);
   const chainId = Number(BigInt(String(await provider.request({ method: "eth_chainId" }))));
-  if (chainId !== ARC_CHAIN_ID) throw new Error("The wallet is not connected to Arc Mainnet.");
 
   const address = getAddress(accounts[0]);
-  const walletClient = createWalletClient({ account: address, chain: arcMainnet, transport: custom(provider) });
+  const walletClient = walletClientForAddress(address, provider);
   return { address, chainId, walletClient };
 }
 

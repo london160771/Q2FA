@@ -22,6 +22,8 @@ wallet.json
 keystore.json
 credentials/
 secrets/
+.secrets/
+guardian-seed.hex
 deployment-secrets/
 wallet-secrets/
 .aws/

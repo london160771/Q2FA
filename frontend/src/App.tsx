@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createPublicClient,
-  encodeFunctionData,
+  decodeEventLog,
   formatUnits,
-  getAddress,
+  isAddress,
   http,
   parseUnits,
   toHex,
@@ -16,150 +16,238 @@ import {
   ARC_USDC,
   AuthorizationAction,
   Q2FA_ACCOUNT,
+  Q2FA_DEPLOYMENT_BLOCK,
   WALLET_A,
   WALLET_B,
   addressSubject,
   arcMainnet,
   encodeAuthorizationPayload,
 } from "@q2fa/shared";
-import { destroyGuardian, generateGuardian, importGuardianSeed, signMessage, verifyMessage, type GuardianMaterial } from "./guardian.js";
-import { arcUsdcAbi, q2faAccountAbi } from "./contracts.js";
+import {
+  ActivityFeed,
+  LoadingPanel,
+  SecurityStatusCard,
+  ShortAddress,
+  StatusAlert,
+} from "./dashboard-components.js";
+import {
+  buildWithdrawalPayload,
+  canSubmitProtectedAction,
+  formatUsdc,
+  guardianMatchesOnchain,
+  sortActivityNewestFirst,
+  verifyWalletOnlyBlocked,
+  validateSendRequest,
+  type ActivityEntry,
+} from "./dashboard-logic.js";
 import { describeViemError, extractContractErrorName } from "./contract-errors.js";
-import { connectArcMainnetWallet, type ConnectedWallet } from "./wallet.js";
+import type { GuardianMaterial } from "./guardian.js";
+import {
+  arcUsdcAbi,
+  guardianChangedEvent,
+  ownerChangedEvent,
+  q2faAccountAbi,
+  usdcTransferEvent,
+  withdrawalEvent,
+} from "./contracts.js";
+import { connectArcMainnetWallet, switchToArcMainnet, type ConnectedWallet } from "./wallet.js";
 
-const explorerBase = "https://explorer.arc.io/tx/";
-const phase2FeeLimit = parseUnits("0.05", 18);
-const demoAmount = 1n;
 const publicClient = createPublicClient({ chain: arcMainnet, transport: http(ARC_RPC_URL) });
+const explorerTx = "https://explorer.arc.io/tx/";
+const ACTIVITY_QUERY_CHUNK_BLOCKS = 10_000n;
+const ACTIVITY_QUERY_DELAY_MS = 750;
 
-interface AccountSnapshot {
+type Section = "overview" | "send" | "activity" | "demo";
+type DemoCheckState = "idle" | "running" | "passed" | "failed";
+
+interface LiveAccount {
+  chainId: number;
   owner: Address;
   guardianKey: Hex;
   nonce: bigint;
-  accountUsdc: bigint;
-  walletAUsdc: bigint;
-  walletANativeBalance: bigint;
-  walletBUsdc: bigint;
+  protectedBalance: bigint;
+  walletUsdc: bigint;
   usdcDecimals: number;
+  latestBlock: bigint;
 }
 
-interface SignedAuthorization {
-  action: "rotation" | "withdrawal";
-  payload: Hex;
-  signature: Uint8Array;
+interface PreparedWithdrawal {
+  recipient: Address;
+  amount: bigint;
   nonce: bigint;
   deadline: bigint;
-  subject: Hex;
-  amount: bigint;
-  publicKey: Hex;
-}
-
-interface TransactionRecord {
-  label: string;
-  hash: Hex;
-  block: string;
-  status: string;
-  gasUsed: string;
-  gasPrice: string;
-  fee: bigint;
-  calldataBytes: number;
-}
-
-interface FeeProjection {
   gasLimit: bigint;
-  pricePerGas: bigint;
   projectedFee: bigint;
 }
 
-export default function App() {
-  const seedInput = useRef<HTMLInputElement>(null);
-  const activeGuardianSeedInput = useRef<HTMLInputElement>(null);
-  const oldGuardian = useRef<GuardianMaterial | null>(null);
-  const newGuardian = useRef<GuardianMaterial | null>(null);
-  const signedAuthorization = useRef<SignedAuthorization | null>(null);
+interface PreparedDeposit {
+  amount: bigint;
+  gasLimit: bigint;
+  projectedFee: bigint;
+}
 
+interface TransactionResult {
+  hash: Hex;
+  amount: bigint;
+  recipient: Address;
+  nonce: bigint;
+  gasUsed: bigint;
+  fee: bigint;
+}
+
+interface DepositResult {
+  hash: Hex;
+  amount: bigint;
+  gasUsed: bigint;
+  fee: bigint;
+}
+
+interface RawLog {
+  blockNumber: bigint | null;
+  transactionHash: Hex | null;
+  logIndex: number | null;
+  data: Hex;
+  topics: readonly Hex[];
+  args?: Record<string, unknown>;
+}
+
+export default function App() {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const guardian = useRef<GuardianMaterial | null>(null);
+  const signature = useRef<Uint8Array | null>(null);
+  const [section, setSection] = useState<Section>("overview");
+  const [account, setAccount] = useState<LiveAccount>();
   const [wallet, setWallet] = useState<ConnectedWallet>();
-  const [snapshot, setSnapshot] = useState<AccountSnapshot>();
-  const [oldGuardianPublicKey, setOldGuardianPublicKey] = useState<Hex>();
-  const [newGuardianPublicKey, setNewGuardianPublicKey] = useState<Hex>();
-  const [signedAction, setSignedAction] = useState<string>();
-  const [negativeChecks, setNegativeChecks] = useState<string[]>([]);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-  const [phase2Fees, setPhase2Fees] = useState(0n);
+  const [guardianReady, setGuardianReady] = useState(false);
+  const [guardianMessage, setGuardianMessage] = useState("Guardian required");
+  const [recipientText, setRecipientText] = useState("");
+  const [amountText, setAmountText] = useState("");
+  const [deadlineMinutes, setDeadlineMinutes] = useState("15");
+  const [preparedWithdrawal, setPreparedWithdrawal] = useState<PreparedWithdrawal>();
+  const [preparedDeposit, setPreparedDeposit] = useState<PreparedDeposit>();
+  const [depositAmountText, setDepositAmountText] = useState("");
+  const [withdrawalResult, setWithdrawalResult] = useState<TransactionResult>();
+  const [depositResult, setDepositResult] = useState<DepositResult>();
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState<string>();
+  const [activityDiagnostic, setActivityDiagnostic] = useState<string>();
+  const [walletOnlyDemoState, setWalletOnlyDemoState] = useState<DemoCheckState>("idle");
+  const [walletOnlyDemoMessage, setWalletOnlyDemoMessage] = useState("");
+  const [twoFactorDemoState, setTwoFactorDemoState] = useState<DemoCheckState>("idle");
+  const [twoFactorDemoMessage, setTwoFactorDemoMessage] = useState("");
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("Read-only Arc Mainnet state is loading.");
+  const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
 
-  const refreshState = useCallback(async (): Promise<AccountSnapshot> => {
-    const [chainId, code] = await Promise.all([
+  const refreshAccount = useCallback(async (): Promise<LiveAccount> => {
+    const [chainId, code, latestBlock] = await Promise.all([
       publicClient.getChainId(),
       publicClient.getCode({ address: Q2FA_ACCOUNT }),
+      publicClient.getBlockNumber(),
     ]);
-    if (chainId !== ARC_CHAIN_ID) throw new Error("RPC chain ID did not match Arc Mainnet (5042).");
-    if (!code || code === "0x") throw new Error("The configured Q2FA account has no deployed code.");
+    if (chainId !== ARC_CHAIN_ID) throw new Error("Arc Mainnet RPC returned an unexpected chain ID.");
+    if (!code || code === "0x") throw new Error("The configured Q2FA account is not deployed on Arc Mainnet.");
 
-    const [owner, guardianKey, nonce, accountUsdc, walletAUsdc, walletANativeBalance, walletBUsdc, usdcDecimals] = await Promise.all([
+    const [owner, guardianKey, nonce, protectedBalance, walletUsdc, usdcDecimals] = await Promise.all([
       publicClient.readContract({ address: Q2FA_ACCOUNT, abi: q2faAccountAbi, functionName: "owner" }),
       publicClient.readContract({ address: Q2FA_ACCOUNT, abi: q2faAccountAbi, functionName: "guardianKey" }),
       publicClient.readContract({ address: Q2FA_ACCOUNT, abi: q2faAccountAbi, functionName: "nonce" }),
       publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "balanceOf", args: [Q2FA_ACCOUNT] }),
       publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "balanceOf", args: [WALLET_A] }),
-      publicClient.getBalance({ address: WALLET_A }),
-      publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "balanceOf", args: [WALLET_B] }),
       publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "decimals" }),
     ]);
-    if (usdcDecimals !== 6) throw new Error(`Arc USDC reported ${usdcDecimals} decimals; expected 6.`);
-
-    const next: AccountSnapshot = { owner, guardianKey, nonce, accountUsdc, walletAUsdc, walletANativeBalance, walletBUsdc, usdcDecimals };
-    setSnapshot(next);
-    return next;
+    if (usdcDecimals !== 6) throw new Error(`Arc USDC reports ${usdcDecimals} decimals; this client expects 6.`);
+    const result = { chainId, owner, guardianKey, nonce, protectedBalance, walletUsdc, usdcDecimals, latestBlock };
+    setAccount(result);
+    setLoading(false);
+    return result;
   }, []);
 
-  const clearSensitiveMemory = useCallback(() => {
-    destroyGuardian(oldGuardian.current);
-    destroyGuardian(newGuardian.current);
-    oldGuardian.current = null;
-    newGuardian.current = null;
-    signedAuthorization.current?.signature.fill(0);
-    signedAuthorization.current = null;
-    setOldGuardianPublicKey(undefined);
-    setNewGuardianPublicKey(undefined);
-    setSignedAction(undefined);
-    setNegativeChecks([]);
-    if (seedInput.current) seedInput.current.value = "";
-    if (activeGuardianSeedInput.current) activeGuardianSeedInput.current.value = "";
+  const loadActivity = useCallback(async () => {
+    setActivityLoading(true);
+    setActivityError(undefined);
+    setActivityDiagnostic(undefined);
+    try {
+      const latest = await publicClient.getBlockNumber();
+      // Arc's RPC rejects a single deployment-to-head query; read only this account's exact events in bounded pages.
+      const accountLogs = await getAccountLogsInChunks(Q2FA_DEPLOYMENT_BLOCK, latest);
+      const deposits = await getDepositLogsInChunks(Q2FA_DEPLOYMENT_BLOCK, latest);
+
+      const entries: ActivityEntry[] = [];
+      for (const log of accountLogs) {
+        const decoded = decodeQ2faLog(log);
+        if (!decoded) continue;
+        if (decoded.eventName === "Withdrawal") {
+          const recipient = decoded.args.recipient as Address | undefined;
+          const amount = decoded.args.amount as bigint | undefined;
+          if (recipient && amount !== undefined) entries.push(logToActivity(log, "Protected withdrawal", amount, recipient, "Recipient"));
+        } else if (decoded.eventName === "OwnerChanged") {
+          const nextOwner = decoded.args.newOwner as Address | undefined;
+          entries.push(logToActivity(log, "Owner changed", undefined, nextOwner, "New owner"));
+        } else if (decoded.eventName === "GuardianChanged") {
+          entries.push(logToActivity(log, "Guardian changed", undefined, undefined, "Guardian key updated"));
+        }
+      }
+      for (const log of deposits) {
+        const args = log.args ?? {};
+        const from = args.from as Address | undefined;
+        const value = args.value as bigint | undefined;
+        if (from?.toLowerCase() !== Q2FA_ACCOUNT.toLowerCase() && value !== undefined) {
+          entries.push(logToActivity(log, "Deposit", value, from, "From"));
+        }
+      }
+
+      const sorted = sortActivityNewestFirst(entries).slice(0, 40);
+      const hashes = [...new Set(sorted.flatMap((entry) => entry.transactionHash ? [entry.transactionHash] : []))];
+      const [receipts, blocks] = await Promise.all([
+        Promise.all(hashes.map((hash) => publicClient.getTransactionReceipt({ hash }).catch(() => undefined))),
+        Promise.all([...new Set(sorted.map((entry) => entry.blockNumber))].map((blockNumber) => publicClient.getBlock({ blockNumber }).catch(() => undefined))),
+      ]);
+      const receiptByHash = new Map(receipts.filter(Boolean).map((receipt) => [receipt!.transactionHash.toLowerCase(), receipt!]));
+      const blockByNumber = new Map(blocks.filter(Boolean).map((block) => [block!.number, block!]));
+      setActivity(sorted.map((entry) => {
+        const receipt = receiptByHash.get(entry.transactionHash.toLowerCase());
+        const block = blockByNumber.get(entry.blockNumber);
+        const gasPrice = receipt?.effectiveGasPrice;
+        return {
+          ...entry,
+          timestamp: block?.timestamp,
+          networkFee: receipt && gasPrice !== undefined ? receipt.gasUsed * gasPrice : undefined,
+        };
+      }));
+    } catch (cause) {
+      setActivityError(userError(cause));
+      const diagnostic = describeViemError(cause, q2faAccountAbi);
+      setActivityDiagnostic(JSON.stringify(diagnostic.chain.map(({ type, name, shortMessage, errorName }) => ({ type, name, shortMessage, errorName }))));
+    } finally {
+      setActivityLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    void refreshState().then(() => setStatus("Connected to the deployed Arc Mainnet account.")).catch((cause: unknown) => {
-      setError(safeErrorMessage(cause));
-      setStatus("Could not read the configured Arc Mainnet account.");
+    void refreshAccount().catch((cause: unknown) => {
+      setError(userError(cause));
+      setLoading(false);
     });
-  }, [refreshState]);
-
-  useEffect(() => {
     const provider = window.ethereum;
     if (!provider?.on) return;
-    const connectedAddress = wallet?.address;
     const onAccountsChanged = (value: unknown) => {
-      const nextAddress = Array.isArray(value) && typeof value[0] === "string" ? getAddress(value[0]) : undefined;
-      if (connectedAddress && nextAddress?.toLowerCase() !== connectedAddress.toLowerCase()) {
-        clearSensitiveMemory();
+      if (!Array.isArray(value) || typeof value[0] !== "string") {
         setWallet(undefined);
-        setStatus("Wallet account changed. Reconnect Wallet A before continuing.");
+        clearPrepared();
         return;
       }
-      if (!nextAddress) setWallet(undefined);
+      setWallet(undefined);
+      clearPrepared();
     };
     const onChainChanged = (value: unknown) => {
       try {
         const chainId = Number(BigInt(String(value)));
         setWallet((current) => current ? { ...current, chainId } : current);
-        signedAuthorization.current?.signature.fill(0);
-        signedAuthorization.current = null;
-        setSignedAction(undefined);
+        clearPrepared();
       } catch {
-        clearSensitiveMemory();
         setWallet(undefined);
       }
     };
@@ -169,618 +257,772 @@ export default function App() {
       provider.removeListener?.("accountsChanged", onAccountsChanged);
       provider.removeListener?.("chainChanged", onChainChanged);
     };
-  }, [wallet?.address, clearSensitiveMemory]);
+    // Setup runs once; provider events read only setters and refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshAccount]);
 
-  useEffect(() => () => clearSensitiveMemory(), [clearSensitiveMemory]);
+  useEffect(() => {
+    if (section === "activity" && activity.length === 0 && !activityLoading && !activityError) void loadActivity();
+  }, [section, activity.length, activityError, activityLoading, loadActivity]);
 
-  const hasWalletA = wallet?.address.toLowerCase() === WALLET_A.toLowerCase();
-  const guardianActive = Boolean(snapshot && newGuardianPublicKey && snapshot.guardianKey.toLowerCase() === newGuardianPublicKey.toLowerCase());
+  useEffect(() => () => {
+    wipeGuardian(guardian.current);
+    signature.current?.fill(0);
+  }, []);
 
-  async function connectWallet(): Promise<void> {
-    setBusy(true);
+  useEffect(() => {
+    if (!account) return;
+    if (guardian.current && !guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey)) {
+      wipeGuardian(guardian.current);
+      guardian.current = null;
+      setGuardianReady(false);
+      setGuardianMessage("Guardian mismatch — restore the active onchain key.");
+    }
+    if (preparedWithdrawal && preparedWithdrawal.nonce !== account.nonce) clearPrepared();
+  }, [account?.guardianKey, account?.nonce, preparedWithdrawal]);
+
+  function clearPrepared() {
+    signature.current?.fill(0);
+    signature.current = null;
+    setPreparedWithdrawal(undefined);
+  }
+
+  async function connectWallet() {
     setError(undefined);
+    setNotice(undefined);
+    setBusy(true);
     try {
       const connected = await connectArcMainnetWallet();
       setWallet(connected);
-      if (connected.address.toLowerCase() !== WALLET_A.toLowerCase()) {
-        setStatus("Connected wallet is not Wallet A. Protected actions are disabled.");
-      } else {
-        setStatus("Wallet A connected on Arc Mainnet.");
-      }
-      await refreshState();
+      setNotice(connected.chainId === ARC_CHAIN_ID
+        ? "Wallet connected on Arc Mainnet."
+        : "Wallet connected. Switch to Arc Mainnet to enable protected actions.");
     } catch (cause) {
-      setError(safeErrorMessage(cause));
+      setError(userError(cause));
     } finally {
       setBusy(false);
     }
   }
 
-  async function importCurrentGuardian(): Promise<void> {
+  async function switchNetwork() {
     setError(undefined);
-    if (!seedInput.current) return;
-    let seedText = seedInput.current.value;
-    seedInput.current.value = "";
-    try {
-      if (!hasWalletA) throw new Error("Connect Wallet A on Arc Mainnet first.");
-      const live = snapshot ?? await refreshState();
-      const material = importGuardianSeed(seedText);
-      seedText = "";
-      if (material.publicKey.toLowerCase() !== live.guardianKey.toLowerCase()) {
-        destroyGuardian(material);
-        throw new Error("The imported seed does not match the deployed account's current guardian.");
-      }
-      destroyGuardian(oldGuardian.current);
-      oldGuardian.current = material;
-      setOldGuardianPublicKey(material.publicKey);
-      setStatus("Current guardian matched the deployed key. Its secret remains in this tab's memory.");
-    } catch (cause) {
-      seedText = "";
-      setError(safeErrorMessage(cause));
-    }
-  }
-
-  async function importActiveGuardian(seedOverride?: string): Promise<void> {
-    setError(undefined);
-    if (!activeGuardianSeedInput.current && seedOverride === undefined) return;
-    let seedText = seedOverride ?? activeGuardianSeedInput.current?.value ?? "";
-    if (activeGuardianSeedInput.current) activeGuardianSeedInput.current.value = "";
-    let activeMaterial: GuardianMaterial | null = null;
-    let rotationMaterial: GuardianMaterial | null = null;
-    try {
-      if (!hasWalletA) throw new Error("Connect Wallet A on Arc Mainnet first.");
-      const live = await refreshState();
-      activeMaterial = importGuardianSeed(seedText);
-      rotationMaterial = importGuardianSeed(seedText);
-      if (
-        activeMaterial.publicKey.toLowerCase() !== live.guardianKey.toLowerCase() ||
-        rotationMaterial.publicKey.toLowerCase() !== live.guardianKey.toLowerCase()
-      ) {
-        throw new Error("The imported seed does not match the deployed account's current guardian.");
-      }
-
-      const activePublicKey = activeMaterial.publicKey;
-      const rotationPublicKey = rotationMaterial.publicKey;
-      destroyGuardian(newGuardian.current);
-      destroyGuardian(oldGuardian.current);
-      signedAuthorization.current?.signature.fill(0);
-      signedAuthorization.current = null;
-      newGuardian.current = activeMaterial;
-      activeMaterial = null;
-      oldGuardian.current = rotationMaterial;
-      rotationMaterial = null;
-      setNewGuardianPublicKey(activePublicKey);
-      setOldGuardianPublicKey(rotationPublicKey);
-      setSignedAction(undefined);
-      setNegativeChecks([]);
-      setStatus("Active guardian matched. Its secret remains only in this tab's memory.");
-    } catch (cause) {
-      setError(safeErrorMessage(cause));
-    } finally {
-      seedText = "";
-      destroyGuardian(activeMaterial);
-      destroyGuardian(rotationMaterial);
-    }
-  }
-
-  async function importActiveGuardianFile(file: File): Promise<void> {
-    let seedText = "";
-    try {
-      seedText = (await file.text()).trim();
-      if (!seedText) throw new Error("The selected local guardian seed file is empty.");
-      await importActiveGuardian(seedText);
-    } catch (cause) {
-      setError(safeErrorMessage(cause));
-    } finally {
-      seedText = "";
-    }
-  }
-  function makeNewGuardian(): void {
-    setError(undefined);
-    try {
-      if (!oldGuardian.current) throw new Error("Import and confirm the current guardian before generating its replacement.");
-      const material = generateGuardian();
-      if (material.publicKey.toLowerCase() === oldGuardian.current.publicKey.toLowerCase()) {
-        destroyGuardian(material);
-        throw new Error("The generated guardian unexpectedly matches the current guardian.");
-      }
-      destroyGuardian(newGuardian.current);
-      newGuardian.current = material;
-      signedAuthorization.current?.signature.fill(0);
-      signedAuthorization.current = null;
-      setNewGuardianPublicKey(material.publicKey);
-      setSignedAction(undefined);
-      setNegativeChecks([]);
-      setStatus("Fresh guardian generated in this tab. Only its public key is displayed.");
-    } catch (cause) {
-      setError(safeErrorMessage(cause));
-    }
-  }
-
-  async function rotateGuardian(): Promise<void> {
     setBusy(true);
-    setError(undefined);
-    setNegativeChecks([]);
     try {
-      const activeWallet = await requireOwnerWallet();
-      const oldKey = oldGuardian.current;
-      const nextKey = newGuardian.current;
-      if (!oldKey || !nextKey) throw new Error("The current and replacement guardian must both be available in tab memory.");
-      const live = await refreshState();
-      if (live.guardianKey.toLowerCase() !== oldKey.publicKey.toLowerCase()) throw new Error("The deployed guardian changed; refusing to sign a stale rotation.");
-      const latestBlock = await publicClient.getBlock({ blockTag: "latest" });
-      const deadline = latestBlock.timestamp + 900n;
-      const subject = nextKey.publicKey;
-      const payload = await getMatchingPayload(AuthorizationAction.ChangeGuardian, subject, 0n, live.nonce, deadline);
-      const signature = signMessage(oldKey.secretKey, payload);
-      if (!verifyMessage(oldKey.publicKey, payload, signature)) {
-        signature.fill(0);
-        throw new Error("Local guardian signature self-check failed.");
-      }
-      const signatureHex = toHex(signature);
-      signedAuthorization.current = { action: "rotation", payload, signature, nonce: live.nonce, deadline, subject, amount: 0n, publicKey: oldKey.publicKey };
-      setSignedAction("Guardian rotation authorization is signed locally and ready for simulation.");
-
-      const call = {
-        address: Q2FA_ACCOUNT,
-        abi: q2faAccountAbi,
-        functionName: "changeGuardian" as const,
-        args: [subject, deadline, signatureHex] as const,
-        account: activeWallet.address,
-      };
-      const calldata = encodeFunctionData({ abi: q2faAccountAbi, functionName: "changeGuardian", args: [subject, deadline, signatureHex] });
-      await publicClient.simulateContract(call);
-      const gasEstimate = await publicClient.estimateContractGas(call);
-      const projection = await projectFee(gasEstimate);
-      const current = await refreshState();
-      assertBudget("guardian rotation", projection, current.walletANativeBalance);
-      if (current.nonce !== live.nonce || current.guardianKey.toLowerCase() !== oldKey.publicKey.toLowerCase()) {
-        throw new Error("Onchain account state changed during review. Create a fresh rotation authorization.");
-      }
-      setStatus(`Rotation simulation passed. Projected maximum network fee: ${formatUnits(projection.projectedFee, 18)} USDC.`);
-      const calldataBytes = (calldata.length - 2) / 2;
-      const hash = await activeWallet.walletClient.writeContract({ ...call, gas: projection.gasLimit, chain: undefined });
-      const tx = await waitForReceipt("Guardian rotation", hash, projection, calldataBytes);
-      if (tx.status !== "success") throw new Error("Guardian rotation transaction reverted.");
-      const after = await refreshState();
-      if (after.guardianKey.toLowerCase() !== nextKey.publicKey.toLowerCase() || after.nonce !== live.nonce + 1n) {
-        throw new Error("Rotation receipt succeeded but the expected guardian or nonce was not observed onchain.");
-      }
-      destroyGuardian(oldGuardian.current);
-      oldGuardian.current = null;
-      setOldGuardianPublicKey(undefined);
-      signedAuthorization.current?.signature.fill(0);
-      signedAuthorization.current = null;
-      setSignedAction(undefined);
-      setStatus(`Guardian rotation confirmed in block ${tx.block}. The new guardian is active.`);
+      await switchToArcMainnet();
+      if (wallet) setWallet({ ...wallet, chainId: ARC_CHAIN_ID });
+      setNotice("Wallet switched to Arc Mainnet.");
     } catch (cause) {
-      setError(safeErrorMessage(cause));
-      setStatus("Rotation stopped before further action. Refresh the account state before retrying.");
+      setError(userError(cause));
     } finally {
       setBusy(false);
     }
   }
 
-  async function depositMinimum(): Promise<void> {
+  async function restoreGuardianFile(file?: File) {
+    if (!file) return;
     setBusy(true);
     setError(undefined);
+    setNotice(undefined);
+    clearPrepared();
+    const prior = guardian.current;
+    wipeGuardian(prior);
+    guardian.current = null;
+    setGuardianReady(false);
     try {
-      const activeWallet = await requireOwnerWallet();
-      const live = await refreshState();
-      if (live.accountUsdc > 0n) throw new Error("The account already holds USDC; no deposit is needed for the one-unit demo withdrawal.");
-      if (live.walletAUsdc < demoAmount) throw new Error("Wallet A does not hold the minimum one base unit of Arc USDC.");
-      const call = {
-        address: ARC_USDC,
-        abi: arcUsdcAbi,
-        functionName: "transfer" as const,
-        args: [Q2FA_ACCOUNT, demoAmount] as const,
-        account: activeWallet.address,
-      };
-      const calldata = encodeFunctionData({ abi: arcUsdcAbi, functionName: "transfer", args: [Q2FA_ACCOUNT, demoAmount] });
-      const simulation = await publicClient.simulateContract(call);
-      if (!simulation.result) throw new Error("Arc USDC rejected the minimum deposit simulation.");
-      const gasEstimate = await publicClient.estimateContractGas(call);
-      const projection = await projectFee(gasEstimate);
-      const latest = await refreshState();
-      assertBudget("minimum USDC deposit", projection, latest.walletANativeBalance);
-      if (latest.accountUsdc !== 0n || latest.walletAUsdc < demoAmount) throw new Error("Balances changed during review; refusing the deposit.");
-      setStatus(`Deposit simulation passed. Sending 0.000001 USDC; projected maximum network fee: ${formatUnits(projection.projectedFee, 18)} USDC.`);
-      const hash = await activeWallet.walletClient.writeContract({ ...call, gas: projection.gasLimit, chain: undefined });
-      const tx = await waitForReceipt("Minimum USDC deposit", hash, projection, (calldata.length - 2) / 2);
-      if (tx.status !== "success") throw new Error("Minimum USDC deposit reverted.");
-      const after = await refreshState();
-      if (after.accountUsdc < demoAmount) throw new Error("Deposit receipt succeeded but the account balance did not increase as expected.");
-      setStatus(`Minimum deposit confirmed in block ${tx.block}.`);
+      if (file.size > 512) throw new Error("The guardian backup file is unexpectedly large.");
+      const [freshAccount, seedText] = await Promise.all([refreshAccount(), file.text()]);
+      const { importGuardianSeed } = await import("./guardian.js");
+      const imported = importGuardianSeed(seedText.trim());
+      if (!guardianMatchesOnchain(imported.publicKey, freshAccount.guardianKey)) {
+        wipeGuardian(imported);
+        setGuardianMessage("Guardian mismatch — this seed does not match the active onchain guardian.");
+        throw new Error("Guardian mismatch. The imported seed was cleared from memory.");
+      }
+      guardian.current = imported;
+      setGuardianReady(true);
+      setGuardianMessage("Active guardian matched");
+      setNotice("Active guardian matched. The guardian is ready in this tab’s memory.");
     } catch (cause) {
-      setError(safeErrorMessage(cause));
-      setStatus("Deposit stopped. Refresh balances before retrying.");
+      setGuardianMessage("Guardian required");
+      setError(userError(cause));
     } finally {
+      if (fileInput.current) fileInput.current.value = "";
       setBusy(false);
     }
   }
 
-  async function signWithdrawal(): Promise<void> {
-    setBusy(true);
+  function forgetGuardian() {
+    wipeGuardian(guardian.current);
+    guardian.current = null;
+    setGuardianReady(false);
+    setGuardianMessage("Guardian required");
+    clearPrepared();
+    setNotice("Guardian removed from this tab’s memory.");
+  }
+
+  async function prepareWithdrawal() {
     setError(undefined);
-    setNegativeChecks([]);
+    setNotice(undefined);
+    setWithdrawalResult(undefined);
+    clearPrepared();
+    if (!account) return setError("Arc Mainnet account state is not ready yet.");
+    if (!wallet) return setError("Connect Wallet A before preparing a protected withdrawal.");
+    if (!isOwnerWallet(wallet, account.owner)) return setError("Connected wallet is not the Q2FA owner. You can still view account state.");
+    if (wallet.chainId !== ARC_CHAIN_ID) return setError("Switch to Arc Mainnet before preparing a protected withdrawal.");
+    if (!guardian.current || !guardianReady || !guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey)) {
+      return setError("Restore the active onchain guardian before signing.");
+    }
+
+    setBusy(true);
     try {
-      await requireOwnerWallet();
-      const guardian = newGuardian.current;
-      if (!guardian || !guardianActive) throw new Error("The new client guardian is not active on the deployed account.");
-      const live = await refreshState();
-      if (live.accountUsdc < demoAmount) throw new Error("Deposit the minimum USDC amount before preparing the withdrawal.");
-      if (live.guardianKey.toLowerCase() !== guardian.publicKey.toLowerCase()) throw new Error("The account guardian no longer matches the client-held key.");
+      const current = await refreshAccount();
+      if (!guardianMatchesOnchain(guardian.current.publicKey, current.guardianKey)) throw new Error("The guardian changed onchain. Restore the currently active guardian again.");
+      const request = validateSendRequest(recipientText, amountText, current.protectedBalance, current.usdcDecimals);
+      const minutes = Number(deadlineMinutes);
+      if (![5, 15, 30, 60].includes(minutes)) throw new Error("Choose a supported authorization expiry.");
       const block = await publicClient.getBlock({ blockTag: "latest" });
-      const deadline = block.timestamp + 900n;
-      const subject = addressSubject(WALLET_B);
-      const payload = await getMatchingPayload(AuthorizationAction.Withdraw, subject, demoAmount, live.nonce, deadline);
-      const signature = signMessage(guardian.secretKey, payload);
-      if (!verifyMessage(guardian.publicKey, payload, signature)) {
-        signature.fill(0);
-        throw new Error("Local withdrawal signature self-check failed.");
-      }
-      signedAuthorization.current?.signature.fill(0);
-      signedAuthorization.current = { action: "withdrawal", payload, signature, nonce: live.nonce, deadline, subject, amount: demoAmount, publicKey: guardian.publicKey };
-      setSignedAction("Withdrawal signed locally. Read-only authorization checks are running.");
-      const results = await simulateWithdrawalNegatives(signedAuthorization.current);
-      const afterSimulations = await refreshState();
-      if (
-        afterSimulations.nonce !== live.nonce ||
-        afterSimulations.guardianKey.toLowerCase() !== guardian.publicKey.toLowerCase() ||
-        afterSimulations.accountUsdc !== live.accountUsdc
-      ) {
-        throw new Error("The read-only simulations changed observed account state. Submission remains disabled.");
-      }
-      setNegativeChecks(results);
-      setStatus("Valid withdrawal simulation and all negative authorization checks passed. Review below, then submit with Wallet A.");
-    } catch (cause) {
-      signedAuthorization.current?.signature.fill(0);
-      signedAuthorization.current = null;
-      setSignedAction(undefined);
-      setError(safeErrorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
+      const deadline = block.timestamp + BigInt(minutes * 60);
+      const payload = buildWithdrawalPayload({
+        chainId: ARC_CHAIN_ID,
+        account: Q2FA_ACCOUNT,
+        subject: addressSubject(request.recipient),
+        amount: request.amount,
+        nonce: current.nonce,
+        deadline,
+      });
+      await assertContractPayload(AuthorizationAction.Withdraw, addressSubject(request.recipient), request.amount, deadline, payload);
 
-  async function submitWithdrawal(): Promise<void> {
-    setBusy(true);
-    setError(undefined);
-    try {
-      const activeWallet = await requireOwnerWallet();
-      const authorization = signedAuthorization.current;
-      const guardian = newGuardian.current;
-      if (!authorization || authorization.action !== "withdrawal" || !guardian) throw new Error("Sign the withdrawal authorization first.");
-      if (authorization.publicKey.toLowerCase() !== guardian.publicKey.toLowerCase()) throw new Error("The prepared signature is not from the active guardian.");
-      const live = await refreshState();
-      if (live.guardianKey.toLowerCase() !== guardian.publicKey.toLowerCase()) throw new Error("The deployed guardian changed; refusing to submit.");
-      if (live.nonce !== authorization.nonce) throw new Error("The account nonce changed; prepare a new withdrawal signature.");
-      if (live.accountUsdc < authorization.amount) throw new Error("The account balance is below the signed withdrawal amount.");
-      const [beforeWalletB, block] = await Promise.all([
-        publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "balanceOf", args: [WALLET_B] }),
-        publicClient.getBlock({ blockTag: "latest" }),
-      ]);
-      if (authorization.deadline < block.timestamp) throw new Error("The authorization expired; create a fresh signature.");
-      const signatureHex = toHex(authorization.signature);
+      const { signMessage, verifyMessage } = await import("./guardian.js");
+      const nextSignature = signMessage(guardian.current.secretKey, payload);
+      if (!verifyMessage(guardian.current.publicKey, payload, nextSignature)) {
+        nextSignature.fill(0);
+        throw new Error("Local guardian signature verification failed.");
+      }
       const call = {
         address: Q2FA_ACCOUNT,
         abi: q2faAccountAbi,
         functionName: "withdraw" as const,
-        args: [WALLET_B, authorization.amount, authorization.deadline, signatureHex] as const,
-        account: activeWallet.address,
+        args: [request.recipient, request.amount, deadline, toHex(nextSignature)] as const,
+        account: WALLET_A,
       };
-      const calldata = encodeFunctionData({ abi: q2faAccountAbi, functionName: "withdraw", args: [WALLET_B, authorization.amount, authorization.deadline, signatureHex] });
       await publicClient.simulateContract(call);
-      const gasEstimate = await publicClient.estimateContractGas(call);
-      const projection = await projectFee(gasEstimate);
-      const latest = await refreshState();
-      assertBudget("protected withdrawal", projection, latest.walletANativeBalance);
-      if (latest.nonce !== authorization.nonce || latest.guardianKey.toLowerCase() !== guardian.publicKey.toLowerCase()) {
-        throw new Error("Account state changed during review; create a fresh authorization.");
-      }
-      setStatus(`Simulation passed. Sending 0.000001 USDC to Wallet B; projected maximum network fee: ${formatUnits(projection.projectedFee, 18)} USDC.`);
-      const hash = await activeWallet.walletClient.writeContract({ ...call, gas: projection.gasLimit, chain: undefined });
-      const calldataBytes = (calldata.length - 2) / 2;
-      const tx = await waitForReceipt("Protected withdrawal to Wallet B", hash, projection, calldataBytes);
-      if (tx.status !== "success") throw new Error("Protected withdrawal transaction reverted.");
-      const after = await refreshState();
-      const afterWalletB = await publicClient.readContract({ address: ARC_USDC, abi: arcUsdcAbi, functionName: "balanceOf", args: [WALLET_B] });
-      if (after.nonce !== authorization.nonce + 1n) throw new Error("Withdrawal succeeded but the account nonce did not advance exactly once.");
-      if (afterWalletB - beforeWalletB !== authorization.amount) throw new Error("Withdrawal succeeded but Wallet B's Arc USDC balance delta did not match the signed amount.");
-      authorization.signature.fill(0);
-      signedAuthorization.current = null;
-      setSignedAction(undefined);
-      setStatus(`Withdrawal confirmed. Wallet B received ${formatUnits(authorization.amount, after.usdcDecimals)} USDC; nonce advanced ${authorization.nonce} → ${after.nonce}.`);
+      const estimate = await publicClient.estimateContractGas(call);
+      const fee = await estimateFee(estimate);
+      signature.current = nextSignature;
+      setPreparedWithdrawal({ recipient: request.recipient, amount: request.amount, nonce: current.nonce, deadline, gasLimit: fee.gasLimit, projectedFee: fee.projectedFee });
+      setNotice("Guardian approved. The exact withdrawal was simulated on Arc Mainnet and gas was estimated. Review the details before asking Wallet A to submit.");
     } catch (cause) {
-      setError(safeErrorMessage(cause));
-      setStatus("Withdrawal stopped. Check the current account nonce and balances before retrying.");
+      signature.current?.fill(0);
+      signature.current = null;
+      setError(userError(cause));
     } finally {
       setBusy(false);
     }
   }
 
-  async function requireOwnerWallet(): Promise<ConnectedWallet> {
-    if (!wallet) throw new Error("Connect Wallet A first.");
-    const provider = window.ethereum;
-    if (!provider) throw new Error("The injected wallet is no longer available.");
-    const chainId = Number(BigInt(String(await provider.request({ method: "eth_chainId" }))));
-    if (chainId !== ARC_CHAIN_ID) throw new Error("Switch the connected wallet to Arc Mainnet (5042).");
-    if (wallet.address.toLowerCase() !== WALLET_A.toLowerCase()) throw new Error("Only Wallet A can submit protected actions.");
-    const [owner, liveChainId] = await Promise.all([
-      publicClient.readContract({ address: Q2FA_ACCOUNT, abi: q2faAccountAbi, functionName: "owner" }),
-      publicClient.getChainId(),
-    ]);
-    if (liveChainId !== ARC_CHAIN_ID || owner.toLowerCase() !== WALLET_A.toLowerCase()) {
-      throw new Error("Live Arc state does not match the configured chain and Wallet A owner.");
-    }
-    return wallet;
-  }
+  async function submitWithdrawal() {
+    setError(undefined);
+    setNotice(undefined);
+    const prepared = preparedWithdrawal;
+    const pqSignature = signature.current;
+    if (!prepared || !pqSignature || !wallet || !account) return setError("Prepare and review the protected action first.");
+    if (!canSubmitProtectedAction({
+      connectedAddress: wallet.address,
+      accountOwner: account.owner,
+      walletChainId: wallet.chainId,
+      rpcChainId: account.chainId,
+      guardianMatched: guardianReady && Boolean(guardian.current && guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey)),
+      simulationPassed: true,
+    })) return setError("Submission is disabled until the owner wallet, Arc Mainnet, active guardian, and simulation all match.");
 
-  async function getMatchingPayload(action: 0 | 1 | 2, subject: Hex, amount: bigint, nonce: bigint, deadline: bigint): Promise<Hex> {
-    const clientPayload = encodeAuthorizationPayload({
-      chainId: ARC_CHAIN_ID,
-      account: Q2FA_ACCOUNT,
-      action,
-      subject,
-      amount,
-      nonce,
-      deadline,
-    });
-    const contractPayload = await publicClient.readContract({
-      address: Q2FA_ACCOUNT,
-      abi: q2faAccountAbi,
-      functionName: "authorizationPayload",
-      args: [action, subject, amount, deadline],
-    });
-    if (contractPayload.toLowerCase() !== clientPayload.toLowerCase()) {
-      throw new Error("Client authorization bytes differ from the deployed contract's payload.");
-    }
-    return clientPayload;
-  }
-
-  async function projectFee(gasEstimate: bigint): Promise<FeeProjection> {
-    const fees = await publicClient.estimateFeesPerGas();
-    const pricePerGas = ("maxFeePerGas" in fees ? fees.maxFeePerGas : undefined)
-      ?? ("gasPrice" in fees ? fees.gasPrice : undefined);
-    if (!pricePerGas || pricePerGas <= 0n) throw new Error("Arc RPC did not return usable gas-price information.");
-    const gasLimit = gasEstimate + (gasEstimate + 3n) / 4n;
-    return { gasLimit, pricePerGas, projectedFee: gasLimit * pricePerGas };
-  }
-
-  function assertBudget(action: string, projection: FeeProjection, nativeBalance: bigint): void {
-    if (phase2Fees + projection.projectedFee > phase2FeeLimit) {
-      throw new Error(`${action} projected fee would exceed the Phase 2 network-fee cap of 0.05 USDC; no transaction was sent.`);
-    }
-    if (nativeBalance < projection.projectedFee) {
-      throw new Error(`${action} projected maximum fee exceeds Wallet A's current native USDC balance; no transaction was sent.`);
-    }
-  }
-
-  async function expectRevert(label: string, expectedName: string, operation: () => Promise<unknown>): Promise<string> {
-    let failure: unknown;
+    setBusy(true);
     try {
-      await operation();
+      const providerChain = Number(BigInt(String(await window.ethereum?.request({ method: "eth_chainId" }))));
+      if (providerChain !== ARC_CHAIN_ID) throw new Error("Switch to Arc Mainnet before submitting.");
+      const current = await refreshAccount();
+      if (current.owner.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("Connected wallet is not the live Q2FA owner.");
+      if (current.nonce !== prepared.nonce) throw new Error("The account nonce changed. Prepare a new authorization before submitting.");
+      if (current.protectedBalance < prepared.amount) throw new Error("Protected balance changed and is now below the signed amount.");
+      if (BigInt(Math.floor(Date.now() / 1_000)) > prepared.deadline) throw new Error("Authorization expired. Sign a new action with a fresh deadline.");
+      if (!guardian.current || !guardianMatchesOnchain(guardian.current.publicKey, current.guardianKey)) throw new Error("The active guardian changed. Restore it again before submitting.");
+      const args = [prepared.recipient, prepared.amount, prepared.deadline, toHex(pqSignature)] as const;
+      const request = { address: Q2FA_ACCOUNT, abi: q2faAccountAbi, functionName: "withdraw" as const, args, account: wallet.address };
+      await publicClient.simulateContract(request);
+      const gasEstimate = await publicClient.estimateContractGas(request);
+      const estimate = await estimateFee(gasEstimate);
+      const hash = await wallet.walletClient.writeContract({ ...request, chain: arcMainnet, gas: estimate.gasLimit });
+      setNotice("Wallet submitted the withdrawal. Waiting for its Arc Mainnet receipt…");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, confirmations: 1, timeout: 180_000 });
+      if (receipt.status !== "success") throw new Error("The withdrawal transaction reverted on Arc Mainnet.");
+      const fee = receipt.gasUsed * (receipt.effectiveGasPrice ?? estimate.pricePerGas);
+      const after = await refreshAccount();
+      if (after.nonce !== prepared.nonce + 1n) throw new Error("Transaction succeeded, but the live nonce did not advance exactly once.");
+      setWithdrawalResult({ hash, amount: prepared.amount, recipient: prepared.recipient, nonce: prepared.nonce, gasUsed: receipt.gasUsed, fee });
+      signature.current?.fill(0);
+      signature.current = null;
+      setPreparedWithdrawal(undefined);
+      setNotice("Protected withdrawal confirmed on Arc Mainnet.");
+      if (section === "activity") void loadActivity();
     } catch (cause) {
-      failure = cause;
-    }
-    if (!failure) throw new Error(`Negative simulation unexpectedly succeeded: ${label}.`);
-    const actualName = extractContractErrorName(failure, q2faAccountAbi);
-    if (actualName !== expectedName) {
-      const diagnostic = describeViemError(failure, q2faAccountAbi);
-      throw new Error(`Negative simulation ${label} reverted with ${actualName ?? "an undecoded error"}, expected ${expectedName}. Viem diagnostic: ${JSON.stringify(diagnostic)}`);
-    }
-    return `${label}: reverted with ${expectedName}`;
-  }
-
-  async function waitForReceipt(label: string, hash: Hex, projection: FeeProjection, calldataBytes: number): Promise<TransactionRecord> {
-    setStatus(`${label} submitted. Waiting for the Arc Mainnet receipt…`);
-    const receipt = await publicClient.waitForTransactionReceipt({ hash, confirmations: 1, timeout: 180_000 });
-    const gasPrice = receipt.effectiveGasPrice ?? projection.pricePerGas;
-    const fee = receipt.gasUsed * gasPrice;
-    const record: TransactionRecord = {
-      label,
-      hash,
-      block: receipt.blockNumber.toString(),
-      status: receipt.status,
-      gasUsed: receipt.gasUsed.toString(),
-      gasPrice: gasPrice.toString(),
-      fee,
-      calldataBytes,
-    };
-    setTransactions((current) => [...current, record]);
-    setPhase2Fees((current) => current + fee);
-    return record;
-  }
-
-  async function simulateWithdrawalNegatives(authorization: SignedAuthorization): Promise<string[]> {
-    const signatureHex = toHex(authorization.signature);
-    const base = {
-      address: Q2FA_ACCOUNT,
-      abi: q2faAccountAbi,
-      functionName: "withdraw" as const,
-      args: [WALLET_B, authorization.amount, authorization.deadline, signatureHex] as const,
-      account: WALLET_A,
-    };
-    await publicClient.simulateContract(base);
-    const checks: string[] = ["Valid signature: simulation succeeded"];
-
-    const changedRecipient = await expectRevert("changed recipient", "InvalidPQSignature", () => publicClient.simulateContract({
-      ...base,
-      args: [WALLET_A, authorization.amount, authorization.deadline, signatureHex],
-    }));
-    checks.push(changedRecipient);
-
-    const changedAmount = await expectRevert("changed amount", "InvalidPQSignature", () => publicClient.simulateContract({
-      ...base,
-      args: [WALLET_B, authorization.amount + 1n, authorization.deadline, signatureHex],
-    }));
-    checks.push(changedAmount);
-
-    const postUseNonce = authorization.nonce + 1n;
-    checks.push(await expectRevert("stale nonce after nonce advance", "InvalidPQSignature", () => publicClient.simulateContract({
-      ...base,
-      stateOverride: [{
-        address: Q2FA_ACCOUNT,
-        stateDiff: [{ slot: toHex(2n, { size: 32 }), value: toHex(postUseNonce, { size: 32 }) }],
-      }],
-    })));
-
-    const block = await publicClient.getBlock({ blockTag: "latest" });
-    const expiredDeadline = block.timestamp - 1n;
-    const expiredPayload = await getMatchingPayload(AuthorizationAction.Withdraw, authorization.subject, authorization.amount, authorization.nonce, expiredDeadline);
-    const expiredSignature = signMessage(newGuardian.current!.secretKey, expiredPayload);
-    try {
-      checks.push(await expectRevert("expired authorization", "AuthorizationExpired", () => publicClient.simulateContract({
-        ...base,
-        args: [WALLET_B, authorization.amount, expiredDeadline, toHex(expiredSignature)],
-      })));
+      setError(userError(cause));
     } finally {
-      expiredSignature.fill(0);
+      setBusy(false);
     }
+  }
 
-    checks.push(await expectRevert("non-owner sender", "NotOwner", () => publicClient.simulateContract({
-      ...base,
-      account: WALLET_B,
-    })));
-
-    const corrupted = Uint8Array.from(authorization.signature);
-    corrupted[0] ^= 1;
+  async function prepareDeposit() {
+    setError(undefined);
+    setNotice(undefined);
+    setPreparedDeposit(undefined);
+    if (!wallet || !account) return setError("Connect Wallet A before depositing USDC.");
+    if (!isOwnerWallet(wallet, account.owner)) return setError("Connected wallet is not the Q2FA owner.");
+    if (wallet.chainId !== ARC_CHAIN_ID) return setError("Switch to Arc Mainnet before depositing.");
     try {
-      checks.push(await expectRevert("corrupted signature", "InvalidPQSignature", () => publicClient.simulateContract({
-        ...base,
-        args: [WALLET_B, authorization.amount, authorization.deadline, toHex(corrupted)],
-      })));
+      const value = parsePositiveUsdc(depositAmountText, account.usdcDecimals);
+      if (value > account.walletUsdc) throw new Error("Wallet A does not have enough Arc USDC for this deposit.");
+      setBusy(true);
+      const request = { address: ARC_USDC, abi: arcUsdcAbi, functionName: "transfer" as const, args: [Q2FA_ACCOUNT, value] as const, account: wallet.address };
+      await publicClient.simulateContract(request);
+      const gas = await publicClient.estimateContractGas(request);
+      const estimate = await estimateFee(gas);
+      setPreparedDeposit({ amount: value, gasLimit: estimate.gasLimit, projectedFee: estimate.projectedFee });
+      setNotice("Deposit simulated. Deposits are ordinary USDC transfers and do not need PQ approval.");
+    } catch (cause) {
+      setError(userError(cause));
     } finally {
-      corrupted.fill(0);
+      setBusy(false);
     }
-
-    const wrongAction = await getMatchingPayload(AuthorizationAction.Withdraw, authorization.subject, authorization.amount, authorization.nonce, authorization.deadline);
-    if (wrongAction !== authorization.payload) throw new Error("Withdrawal payload changed unexpectedly during negative checks.");
-    checks.push(await expectRevert("changed action", "InvalidPQSignature", () => publicClient.simulateContract({
-      address: Q2FA_ACCOUNT,
-      abi: q2faAccountAbi,
-      functionName: "changeGuardian",
-      args: [authorization.publicKey, authorization.deadline, signatureHex],
-      account: WALLET_A,
-    })));
-    return checks;
   }
 
-  function importSeedKeyLabel(): string {
-    return oldGuardianPublicKey ? "Current guardian matched" : "No current guardian imported";
+  async function submitDeposit() {
+    setError(undefined);
+    setNotice(undefined);
+    if (!preparedDeposit || !wallet || !account) return setError("Review the deposit estimate first.");
+    if (wallet.address.toLowerCase() !== account.owner.toLowerCase()) return setError("Connected wallet is not the Q2FA owner.");
+    if (wallet.chainId !== ARC_CHAIN_ID) return setError("Switch to Arc Mainnet before depositing.");
+    setBusy(true);
+    try {
+      const live = await refreshAccount();
+      if (live.owner.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("Wallet is no longer the live Q2FA owner.");
+      if (preparedDeposit.amount > live.walletUsdc) throw new Error("Wallet A USDC balance changed; prepare the deposit again.");
+      const request = { address: ARC_USDC, abi: arcUsdcAbi, functionName: "transfer" as const, args: [Q2FA_ACCOUNT, preparedDeposit.amount] as const, account: wallet.address };
+      await publicClient.simulateContract(request);
+      const gas = await publicClient.estimateContractGas(request);
+      const estimate = await estimateFee(gas);
+      const hash = await wallet.walletClient.writeContract({ ...request, chain: arcMainnet, gas: estimate.gasLimit });
+      setNotice("Deposit submitted. Waiting for its Arc Mainnet receipt…");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, confirmations: 1, timeout: 180_000 });
+      if (receipt.status !== "success") throw new Error("The USDC deposit reverted on Arc Mainnet.");
+      const fee = receipt.gasUsed * (receipt.effectiveGasPrice ?? estimate.pricePerGas);
+      await refreshAccount();
+      setDepositResult({ hash, amount: preparedDeposit.amount, gasUsed: receipt.gasUsed, fee });
+      setPreparedDeposit(undefined);
+      setNotice("USDC deposit confirmed. The balance is now held by the Q2FA account.");
+      if (section === "activity") void loadActivity();
+    } catch (cause) {
+      setError(userError(cause));
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function runWalletOnlySimulation() {
+    setError(undefined);
+    setWalletOnlyDemoState("running");
+    setWalletOnlyDemoMessage("");
+    if (!account) {
+      setWalletOnlyDemoState("failed");
+      setWalletOnlyDemoMessage("Arc Mainnet account state is not ready yet.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fresh = await refreshAccount();
+      const block = await publicClient.getBlock({ blockTag: "latest" });
+      const deadline = block.timestamp + 300n;
+      const outcome = await verifyWalletOnlyBlocked(
+        () => publicClient.simulateContract({
+          address: Q2FA_ACCOUNT,
+          abi: q2faAccountAbi,
+          functionName: "withdraw",
+          args: [WALLET_B, 1n, deadline, "0x"],
+          account: WALLET_A,
+        }),
+        (cause) => extractContractErrorName(cause, q2faAccountAbi),
+      );
+      const after = await refreshAccount();
+      if (after.nonce !== fresh.nonce || after.guardianKey.toLowerCase() !== fresh.guardianKey.toLowerCase()) {
+        throw new Error("Account state changed unexpectedly during eth_call simulation.");
+      }
+      setWalletOnlyDemoState("passed");
+      setWalletOnlyDemoMessage(`BLOCKED: the owner-only withdrawal failed with ${outcome.revertName} (${outcome.walletOnlyReason}). Arc Mainnet eth_call changed no account state.`);
+    } catch (cause) {
+      setWalletOnlyDemoState("failed");
+      setWalletOnlyDemoMessage(userError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTwoFactorSimulation() {
+    setError(undefined);
+    setTwoFactorDemoState("running");
+    setTwoFactorDemoMessage("");
+    if (!account || !guardian.current || !guardianReady || !guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey)) {
+      setTwoFactorDemoState("failed");
+      setTwoFactorDemoMessage("Restore the active guardian and confirm its onchain match first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fresh = await refreshAccount();
+      if (!guardianMatchesOnchain(guardian.current.publicKey, fresh.guardianKey)) throw new Error("The restored guardian no longer matches the live account.");
+      const block = await publicClient.getBlock({ blockTag: "latest" });
+      const deadline = block.timestamp + 300n;
+      const guardianKey = guardian.current.publicKey;
+      const payload = encodeAuthorizationPayload({
+        chainId: ARC_CHAIN_ID,
+        account: Q2FA_ACCOUNT,
+        action: AuthorizationAction.ChangeGuardian,
+        subject: guardianKey,
+        amount: 0n,
+        nonce: fresh.nonce,
+        deadline,
+      });
+      await assertContractPayload(AuthorizationAction.ChangeGuardian, guardianKey, 0n, deadline, payload);
+      const { signMessage, verifyMessage } = await import("./guardian.js");
+      const signatureBytes = signMessage(guardian.current.secretKey, payload);
+      try {
+        if (!verifyMessage(guardian.current.publicKey, payload, signatureBytes)) throw new Error("Local guardian signature verification failed.");
+        await publicClient.simulateContract({
+          address: Q2FA_ACCOUNT,
+          abi: q2faAccountAbi,
+          functionName: "changeGuardian",
+          args: [guardianKey, deadline, toHex(signatureBytes)],
+          account: WALLET_A,
+        });
+      } finally {
+        signatureBytes.fill(0);
+      }
+      const after = await refreshAccount();
+      if (after.nonce !== fresh.nonce || after.guardianKey.toLowerCase() !== fresh.guardianKey.toLowerCase()) {
+        throw new Error("Account state changed unexpectedly during eth_call simulation.");
+      }
+      setTwoFactorDemoState("passed");
+      setTwoFactorDemoMessage("AUTHORIZED: Wallet A submitted the simulated call and the active guardian signed the exact onchain payload. Arc Mainnet eth_call changed no account state.");
+    } catch (cause) {
+      setTwoFactorDemoState("failed");
+      setTwoFactorDemoMessage(userError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const ownerActive = Boolean(account && account.owner.toLowerCase() === WALLET_A.toLowerCase());
+  const guardianActive = Boolean(account && account.guardianKey.toLowerCase() !== `0x${"00".repeat(32)}`);
+  const guardianMatched = Boolean(account && guardian.current && guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey));
+  const connectedIsOwner = Boolean(wallet && account && isOwnerWallet(wallet, account.owner));
+  const canSubmit = Boolean(account && canSubmitProtectedAction({
+    connectedAddress: wallet?.address,
+    accountOwner: account.owner,
+    walletChainId: wallet?.chainId,
+    rpcChainId: account.chainId,
+    guardianMatched: guardianReady && guardianMatched,
+    simulationPassed: Boolean(preparedWithdrawal),
+  }));
+
+  if (loading && !account) return <main className="app-shell"><LoadingPanel label="Connecting to Arc Mainnet account…" /></main>;
 
   return (
     <main className="app-shell">
-      <header className="page-header">
-        <div>
-          <p className="eyebrow">Q2FA · Phase 2</p>
-          <h1>Guardian client</h1>
-          <p className="lede">Generate and use an SLH-DSA guardian in this browser tab, then submit with Wallet A on Arc Mainnet.</p>
+      <header className="topbar">
+        <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); setSection("overview"); }} aria-label="Q2FA security dashboard home">
+          <span className="brand-mark" aria-hidden="true">Q</span><span>Q2FA</span>
+        </a>
+        <div className="topbar-right">
+          <span className="network-chip"><span className="live-dot" aria-hidden="true" /> Arc Mainnet <span className="chain-id">5042</span></span>
+          {wallet ? <button className="wallet-chip" type="button" onClick={() => void connectWallet()} disabled={busy} aria-label={`Reconnect wallet ${wallet.address}`}><span className="wallet-indicator" aria-hidden="true" />{shortAddress(wallet.address)}</button> : <button className="button button-primary button-small" type="button" onClick={() => void connectWallet()} disabled={busy}>Connect wallet</button>}
         </div>
-        <button type="button" onClick={() => void connectWallet()} disabled={busy}>
-          {wallet ? "Reconnect wallet" : "Connect Wallet A"}
-        </button>
       </header>
 
-      <aside className="security-note" role="note">
-        <strong>Guardian secrets stay in tab memory.</strong> This client does not send them to an API or write them to browser storage. After a reload, restore the deployed guardian with its 48-byte seed in the withdrawal panel.
-      </aside>
+      <nav className="main-nav" aria-label="Dashboard sections">
+        {([ ["overview", "Overview"], ["send", "Send USDC"], ["activity", "Activity"], ["demo", "Security demo"] ] as const).map(([key, label]) => (
+          <button key={key} type="button" className={`nav-item${section === key ? " is-current" : ""}`} aria-current={section === key ? "page" : undefined} onClick={() => setSection(key)}>{label}</button>
+        ))}
+      </nav>
 
-      <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Arc Mainnet</p><h2>Deployed account</h2></div><button className="secondary" type="button" onClick={() => void refreshState().then(() => setStatus("Onchain state refreshed.")).catch((cause: unknown) => setError(safeErrorMessage(cause)))} disabled={busy}>Refresh state</button></div>
-        <dl className="state-grid">
-          <div><dt>Network</dt><dd>Arc Mainnet · 5042</dd></div>
-          <div><dt>Connected wallet</dt><dd>{wallet?.address ?? "Not connected"}{wallet && ` · chain ${wallet.chainId}`}</dd></div>
-          <div><dt>Owner</dt><dd>{snapshot?.owner ?? "Reading…"}{snapshot && snapshot.owner.toLowerCase() !== WALLET_A.toLowerCase() && <span className="warning"> · differs from Wallet A</span>}</dd></div>
-          <div><dt>Q2FA account</dt><dd>{Q2FA_ACCOUNT}</dd></div>
-          <div><dt>Guardian public key</dt><dd className="mono break">{snapshot?.guardianKey ?? "Reading…"}</dd></div>
-          <div><dt>Nonce</dt><dd>{snapshot?.nonce.toString() ?? "—"}</dd></div>
-          <div><dt>Account USDC</dt><dd>{snapshot ? `${formatUnits(snapshot.accountUsdc, snapshot.usdcDecimals)} USDC` : "Reading…"}</dd></div>
-          <div><dt>Wallet A USDC</dt><dd>{snapshot ? `${formatUnits(snapshot.walletAUsdc, snapshot.usdcDecimals)} USDC` : "Reading…"}</dd></div>
-          <div><dt>Wallet A native gas balance</dt><dd>{snapshot ? `${formatUnits(snapshot.walletANativeBalance, 18)} USDC` : "Reading…"}</dd></div>
-          <div><dt>Wallet B USDC</dt><dd>{snapshot ? `${formatUnits(snapshot.walletBUsdc, snapshot.usdcDecimals)} USDC` : "Reading…"}</dd></div>
-        </dl>
-      </section>
+      {error && <StatusAlert message={error} />}
+      {notice && !error && <p className="notice-bar" role="status"><span aria-hidden="true">✓</span>{notice}</p>}
+      {wallet && wallet.chainId !== ARC_CHAIN_ID && <div className="warning-banner"><div><strong>Switch to Arc Mainnet</strong><p>Your wallet is on chain {wallet.chainId}. Read-only account data remains available; protected actions are disabled.</p></div><button className="button button-secondary" onClick={() => void switchNetwork()} disabled={busy}>Switch network</button></div>}
+      {wallet && account && !connectedIsOwner && <div className="warning-banner"><div><strong>Connected wallet is not the Q2FA owner</strong><p>Dashboard data remains read-only. Connect Wallet A to prepare or submit protected actions.</p></div></div>}
 
-      <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Two-factor setup</p><h2>Rotate to a fresh guardian</h2></div><span className={guardianActive ? "badge active" : "badge"}>{guardianActive ? "Active onchain" : "Not active"}</span></div>
-        <p className="body-copy">The currently deployed guardian must authorize installation of its replacement. Import the current guardian here to start a rotation; after a reload, restore the active guardian in the withdrawal panel. Never enter an EVM wallet key here.</p>
-        <div className="action-row">
-          <label className="input-wrap">Current guardian seed
-            <input ref={seedInput} type="password" autoComplete="off" spellCheck={false} placeholder="48-byte hex seed" disabled={busy || !hasWalletA || guardianActive} />
-          </label>
-          <button type="button" className="secondary" onClick={() => void importCurrentGuardian()} disabled={busy || !hasWalletA || guardianActive}>Import and match</button>
-        </div>
-        <p className="muted">{importSeedKeyLabel()}{oldGuardianPublicKey && <span className="mono break"> · {oldGuardianPublicKey}</span>}</p>
-        <div className="action-row">
-          <button type="button" className="secondary" onClick={makeNewGuardian} disabled={busy || !oldGuardian.current}>Generate fresh guardian</button>
-          <button type="button" onClick={() => void rotateGuardian()} disabled={busy || !hasWalletA || !oldGuardian.current || !newGuardian.current || guardianActive}>Sign, simulate, and rotate</button>
-        </div>
-        {newGuardianPublicKey && <p className="key-display"><span className="label">New guardian public key</span><code className="mono break">{newGuardianPublicKey}</code><span className="muted">Private key is held only in this tab's memory.</span></p>}
-        {snapshot && newGuardianPublicKey && <p className="muted">Onchain status: {snapshot.guardianKey.toLowerCase() === newGuardianPublicKey.toLowerCase() ? "active" : "not active"}</p>}
-      </section>
+      {section === "overview" && account && (
+        <>
+          <section className="hero-grid" aria-labelledby="welcome-title">
+            <div className="hero-copy">
+              <p className="eyebrow">Arc smart account · Post-quantum protected</p>
+              <h1 id="welcome-title">Two independent keys.<br /><span>One protected account.</span></h1>
+              <p className="hero-lede">Your USDC is protected by your normal EVM wallet and a post-quantum guardian. One key alone cannot move protected funds.</p>
+              <div className="hero-address"><span>Q2FA account</span><ShortAddress value={Q2FA_ACCOUNT} /><button className="copy-button" type="button" onClick={() => void copyText(Q2FA_ACCOUNT).then(() => setNotice("Account address copied.")).catch(() => setError("Clipboard access is unavailable in this browser."))} aria-label="Copy Q2FA account address">Copy</button></div>
+            </div>
+            <SecurityStatusCard
+              owner={account.owner}
+              guardianKey={account.guardianKey}
+              nonce={account.nonce}
+              ownerActive={ownerActive}
+              guardianActive={guardianActive}
+              guardianReady={guardianReady && guardianMatched}
+            />
+          </section>
 
-      <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Tiny end-to-end demo</p><h2>Withdraw to Wallet B</h2></div><span className="badge">1 base unit</span></div>
-        <p className="body-copy">After a reload, enter the 48-byte seed for the deployed guardian. The client checks the derived key against the onchain guardian and keeps it only in this tab's memory.</p>
-        <div className="action-row">
-          <label className="input-wrap">Active guardian seed
-            <input ref={activeGuardianSeedInput} type="password" autoComplete="off" spellCheck={false} placeholder="48-byte hex seed" disabled={busy || !hasWalletA || guardianActive} />
-          </label>
-          <button type="button" className="secondary" onClick={() => void importActiveGuardian()} disabled={busy || !hasWalletA || guardianActive}>Restore and match</button>
-        </div>
-        <label className="input-wrap">Restore from local seed backup
-          <input
-            type="file"
-            accept=".hex,text/plain"
-            disabled={busy || !hasWalletA || guardianActive}
-            onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              event.currentTarget.value = "";
-              if (file) void importActiveGuardianFile(file);
-            }}
-          />
-        </label>
-        <p className="muted">The selected file is read in this tab and is not uploaded or stored by the client.</p>
-        <p className="muted">{guardianActive ? "Guardian available and matched to the deployed account." : "No active guardian restored in this tab."}</p>        <div className="action-summary">
-          <p><strong>Recipient</strong><code className="mono">{WALLET_B}</code></p>
-          <p><strong>Amount</strong><span>0.000001 USDC</span></p>
-          <p><strong>Required approval</strong><span>Active PQ guardian + Wallet A</span></p>
-          <p><strong>Nonce</strong><span>{snapshot?.nonce.toString() ?? "Read from chain before signing"}</span></p>
-        </div>
-        {snapshot && snapshot.accountUsdc === 0n && <div className="deposit-callout"><span>Account balance is zero. Deposit exactly 0.000001 USDC from Wallet A before withdrawal.</span><button className="secondary" type="button" onClick={() => void depositMinimum()} disabled={busy || !hasWalletA || !guardianActive || snapshot.walletAUsdc < demoAmount}>Deposit minimum</button></div>}
-        {snapshot && snapshot.accountUsdc > 0n && snapshot.accountUsdc < demoAmount && <p className="warning">Account balance is below the demo withdrawal amount.</p>}
-        <div className="action-row">
-          <button type="button" className="secondary" onClick={() => void signWithdrawal()} disabled={busy || !hasWalletA || !guardianActive || (snapshot?.accountUsdc ?? 0n) < demoAmount}>Sign and simulate withdrawal</button>
-          <button type="button" onClick={() => void submitWithdrawal()} disabled={busy || !hasWalletA || !guardianActive || !signedAuthorization.current || negativeChecks.length < 7}>Submit with Wallet A</button>
-        </div>
-        {signedAction && <p className="status-line">{signedAction}</p>}
-        {negativeChecks.length > 0 && <ul className="check-list">{negativeChecks.map((check) => <li key={check}>{check}</li>)}</ul>}
-      </section>
+          <div className="overview-grid">
+            <section className="balance-card" aria-labelledby="balance-title">
+              <div className="balance-topline"><p className="eyebrow">Protected balance</p><span className="balance-token"><span aria-hidden="true">$</span> Arc USDC</span></div>
+              <h2 id="balance-title">{formatUnits(account.protectedBalance, account.usdcDecimals)} <span>USDC</span></h2>
+              <p>USDC held inside this Q2FA account. Only protected account funds are covered.</p>
+              <div className="balance-card-footer"><button className="button button-primary" type="button" onClick={() => setSection("send")}>Send protected USDC</button><button className="text-button" type="button" onClick={() => void refreshAccount().then(() => setNotice("Account state refreshed from Arc Mainnet.")).catch((cause) => setError(userError(cause)))} disabled={busy}>Refresh balance</button></div>
+            </section>
+            <section className="content-card account-card" aria-labelledby="account-details-title">
+              <div className="section-heading"><div><p className="eyebrow">Live Arc state</p><h2 id="account-details-title">Account details</h2></div><span className="live-label"><span className="live-dot" aria-hidden="true" />Live</span></div>
+              <dl className="details-list">
+                <DetailRow label="Owner wallet" value={account.owner} />
+                <DetailRow label="Guardian key" value={account.guardianKey} />
+                <DetailRow label="Network" value="Arc Mainnet · Chain 5042" />
+                <DetailRow label="Current nonce" value={account.nonce.toString()} />
+              </dl>
+            </section>
+          </div>
 
-      <section className="panel">
-        <div className="section-heading"><div><p className="eyebrow">Network fee guard</p><h2>Phase 2 transactions</h2></div><span className="badge">Cap: 0.05 USDC</span></div>
-        <p className="body-copy">Measured network fees: <strong>{formatUnits(phase2Fees, 18)} USDC</strong>. Each transaction is simulated, gas-estimated, and checked against the remaining cap before the wallet is asked to submit it.</p>
-        {transactions.length === 0 ? <p className="muted">No Phase 2 transaction has been sent from this tab.</p> : <ol className="transaction-list">{transactions.map((tx) => <li key={tx.hash}>
-          <div><strong>{tx.label}</strong><span className="muted">Block {tx.block} · {tx.status}</span></div>
-          <a href={`${explorerBase}${tx.hash}`} target="_blank" rel="noreferrer">{tx.hash}</a>
-          <span className="muted">Gas {tx.gasUsed} · {tx.gasPrice} wei · fee {formatUnits(tx.fee, 18)} USDC · calldata {tx.calldataBytes} bytes</span>
-        </li>)}</ol>}
-      </section>
+          <div className="overview-grid overview-lower">
+            <section className="content-card guardian-card" aria-labelledby="guardian-title">
+              <div className="section-heading"><div><p className="eyebrow">Factor 2</p><h2 id="guardian-title">Post-quantum guardian</h2></div><span className={`status-pill${guardianReady && guardianMatched ? " is-good" : " is-pending"}`}>{guardianReady && guardianMatched ? "Ready" : "Required"}</span></div>
+              <p className="card-copy">Restore your active guardian from its local <code>.hex</code> seed backup. The key is derived here and held in this tab’s memory only.</p>
+              <p className={`guardian-state${guardianReady && guardianMatched ? " is-ready" : ""}`} role="status">{guardianReady && guardianMatched ? "✓ Active guardian matched" : guardianReady ? "Guardian mismatch — restore the active key" : guardianMessage}</p>
+              <input ref={fileInput} className="visually-hidden" type="file" accept=".hex,text/plain" aria-label="Import local guardian seed hex file" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void restoreGuardianFile(file); }} />
+              <div className="guardian-actions"><button className="button button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={busy}>Restore guardian</button>{guardianReady && <button className="text-button" type="button" onClick={forgetGuardian} disabled={busy}>Forget in this tab</button>}</div>
+              <p className="microcopy">Seed material is never written to browser storage or sent to a server.</p>
+            </section>
+            <section className="caution-card" aria-label="Wallet protection limitation">
+              <span className="caution-icon" aria-hidden="true">i</span><div><h2>What Q2FA protects</h2><p>Funds held inside this smart account require both factors. Funds held directly in your normal EVM wallet are not protected by Q2FA.</p></div>
+            </section>
+          </div>
 
-      <footer className="footer" aria-live="polite">
-        <span>{status}</span>
-        {error && <span className="error" role="alert">{error}</span>}
-      </footer>
+          <section className="deposit-card content-card" aria-labelledby="deposit-title">
+            <div className="deposit-heading"><div><p className="eyebrow">Add protected funds</p><h2 id="deposit-title">Deposit Arc USDC</h2></div><span className="deposit-note">No PQ approval needed to deposit</span></div>
+            <p className="card-copy">Deposits are standard USDC transfers from the owner wallet. Once inside the account, withdrawals require both factors.</p>
+            <div className="deposit-form">
+              <label className="field"><span>Amount</span><span className="input-with-suffix"><input inputMode="decimal" type="text" value={depositAmountText} onChange={(event) => { setDepositAmountText(event.target.value); setPreparedDeposit(undefined); setDepositResult(undefined); }} placeholder="0.00" aria-label="USDC deposit amount" /><span>USDC</span></span></label>
+              {!preparedDeposit ? <button className="button button-secondary" type="button" onClick={() => void prepareDeposit()} disabled={busy || !connectedIsOwner || wallet?.chainId !== ARC_CHAIN_ID}>Review deposit</button> : <button className="button button-primary" type="button" onClick={() => void submitDeposit()} disabled={busy || !connectedIsOwner || wallet?.chainId !== ARC_CHAIN_ID}>Deposit with wallet</button>}
+            </div>
+            {preparedDeposit && <p className="fee-preview">Deposit {formatUsdc(preparedDeposit.amount, account.usdcDecimals)} · Estimated network fee: <strong>~{formatUnits(preparedDeposit.projectedFee, 18)} USDC</strong></p>}
+            {depositResult && <TransactionConfirmation title="Deposit confirmed" hash={depositResult.hash} fee={depositResult.fee} gasUsed={depositResult.gasUsed} amount={depositResult.amount} decimals={account.usdcDecimals} />}
+          </section>
+        </>
+      )}
+
+      {section === "send" && account && (
+        <section className="send-layout" aria-labelledby="send-title">
+          <div className="page-intro"><p className="eyebrow">Protected action</p><h1 id="send-title">Send USDC</h1><p>Every withdrawal is approved by the active post-quantum guardian, then submitted by the EVM owner wallet.</p></div>
+          <div className="send-card content-card">
+            <div className="send-form-grid">
+              <label className="field field-wide"><span>Recipient address</span><input autoComplete="off" spellCheck={false} type="text" value={recipientText} onChange={(event) => { setRecipientText(event.target.value); clearPrepared(); setWithdrawalResult(undefined); }} placeholder="0x…" aria-describedby="recipient-help" /><small id="recipient-help">{recipientText.trim() && isAddress(recipientText.trim(), { strict: false }) ? "Valid EVM address" : "Enter the wallet address that should receive USDC."}</small></label>
+              <label className="field"><span>Amount</span><span className="input-with-suffix"><input inputMode="decimal" type="text" value={amountText} onChange={(event) => { setAmountText(event.target.value); clearPrepared(); setWithdrawalResult(undefined); }} placeholder="0.00" aria-label="USDC amount" /><span>USDC</span></span><small>Available: {formatUnits(account.protectedBalance, account.usdcDecimals)} USDC</small></label>
+              <label className="field"><span>Authorization expires in</span><select value={deadlineMinutes} onChange={(event) => { setDeadlineMinutes(event.target.value); clearPrepared(); }}><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select><small>Short expiry limits how long this approval remains usable.</small></label>
+            </div>
+            <button className="text-button demo-recipient" type="button" onClick={() => { setRecipientText(WALLET_B); clearPrepared(); }}>Use demo recipient</button>
+
+            {recipientText && amountText && <section className="action-review" aria-labelledby="review-title">
+              <div className="review-heading"><div><p className="eyebrow">Step 1 · Review the action</p><h2 id="review-title">What you are approving</h2></div><span className="balance-mini">Balance · {formatUnits(account.protectedBalance, account.usdcDecimals)} USDC</span></div>
+              <dl className="review-grid">
+                <ReviewRow label="Recipient" value={safeAddressPreview(recipientText)} />
+                <ReviewRow label="Amount" value={safeAmountPreview(amountText)} />
+                <ReviewRow label="Q2FA account" value={shortAddress(Q2FA_ACCOUNT)} />
+                <ReviewRow label="Nonce" value={account.nonce.toString()} />
+                <ReviewRow label="Expires" value={`${deadlineMinutes} minutes after signing`} />
+                <ReviewRow label="Network" value="Arc Mainnet · 5042" />
+              </dl>
+            </section>}
+
+            <div className={`factor-step${guardianReady && guardianMatched ? " is-complete" : ""}`}>
+              <span className="step-number">2</span><div className="step-copy"><span>Factor 2 · PQ Guardian</span><strong>{guardianReady && guardianMatched ? "Guardian ready" : "Guardian required"}</strong><small>{guardianReady && guardianMatched ? "The active key is matched to the onchain guardian." : "Restore the active guardian in Overview to continue."}</small></div>{guardianReady && guardianMatched && <span className="step-check" aria-label="Guardian matched">✓</span>}
+            </div>
+            {preparedWithdrawal && <div className="approval-summary" role="status"><strong>✓ Guardian approved</strong><span>Exact action simulated successfully on Arc Mainnet.</span><span>Estimated network fee: <b>~{formatUnits(preparedWithdrawal.projectedFee, 18)} USDC</b></span></div>}
+            <button className="button button-primary sign-button" type="button" onClick={() => void prepareWithdrawal()} disabled={busy || !guardianReady || !guardianMatched || !connectedIsOwner || wallet?.chainId !== ARC_CHAIN_ID || !recipientText || !amountText}>{busy ? "Preparing…" : preparedWithdrawal ? "Sign again with guardian" : "Sign with guardian"}</button>
+            {wallet && !connectedIsOwner && <p className="inline-hint">Connected wallet is not the Q2FA owner. Signing and submission are disabled.</p>}
+            {wallet && wallet.chainId !== ARC_CHAIN_ID && <p className="inline-hint">Switch to Arc Mainnet before signing or submitting.</p>}
+
+            <div className={`factor-step${preparedWithdrawal ? " is-complete" : " is-muted"}`}>
+              <span className="step-number">3</span><div className="step-copy"><span>Factor 1 · EVM Wallet</span><strong>{connectedIsOwner ? "Wallet A connected" : "Connect Wallet A"}</strong><small>Only the onchain owner can submit the approved withdrawal.</small></div>{connectedIsOwner && <span className="step-check" aria-label="Owner wallet connected">✓</span>}
+            </div>
+            <button className="button button-submit" type="button" onClick={() => void submitWithdrawal()} disabled={busy || !canSubmit}>{busy ? "Waiting for Arc…" : "Submit with wallet"}</button>
+            {!preparedWithdrawal && <p className="inline-hint">Submission unlocks after the guardian signs and the withdrawal simulation passes.</p>}
+            {withdrawalResult && <TransactionConfirmation title="Protected withdrawal successful" hash={withdrawalResult.hash} fee={withdrawalResult.fee} gasUsed={withdrawalResult.gasUsed} amount={withdrawalResult.amount} decimals={account.usdcDecimals} recipient={withdrawalResult.recipient} nonce={withdrawalResult.nonce} />}
+          </div>
+        </section>
+      )}
+
+      {section === "activity" && account && (
+        <section className="page-section" aria-labelledby="activity-page-title">
+          <div className="page-intro"><p className="eyebrow">Onchain history</p><h1 id="activity-page-title">Activity</h1><p>Account events and Arc USDC transfers read directly from Mainnet. No activity database is used.</p></div>
+          <ActivityFeed items={activity} loading={activityLoading} error={activityError} diagnostic={activityDiagnostic} description={`Showing up to 40 real events since deployment at block ${Q2FA_DEPLOYMENT_BLOCK.toString()}. Arc logs are filtered by account and exact event topics, then paged in up to 10,000-block reads.`} emptyAction={<button className="button button-secondary" type="button" onClick={() => void loadActivity()} disabled={activityLoading}>Refresh activity</button>} />
+          {!activityLoading && !activityError && <button className="button button-secondary refresh-activity" type="button" onClick={() => void loadActivity()} disabled={activityLoading}>Refresh activity</button>}
+        </section>
+      )}
+
+      {section === "demo" && account && (
+        <section className="page-section demo-page" aria-labelledby="demo-title">
+          <div className="page-intro"><p className="eyebrow">Read-only contract simulation</p><h1 id="demo-title">Security demo</h1><p>See what the account does when a wallet key is present without a valid post-quantum authorization.</p></div>
+          <div className="demo-grid">
+            <article className="attack-card" aria-labelledby="attack-title">
+              <div className="demo-card-top"><span className="demo-icon attack-icon" aria-hidden="true">!</span><span className="demo-label">Attack scenario</span></div>
+              <h2 id="attack-title">Stolen EVM wallet</h2>
+              <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner address is the simulated sender</li><li><span className="check-bad">×</span> PQ guardian authorization is missing</li></ul>
+              <div className={`demo-result${walletOnlyDemoState === "passed" ? " is-blocked" : walletOnlyDemoState === "failed" ? " is-error" : ""}`}><span className="result-word">{walletOnlyDemoState === "running" ? "Checking…" : walletOnlyDemoState === "passed" ? "Blocked" : walletOnlyDemoState === "failed" ? "Check failed" : "Ready to test"}</span><span>{walletOnlyDemoState === "passed" ? "The contract rejected the owner-only withdrawal for missing or invalid PQ approval." : "The read-only call uses the owner address and an empty PQ signature."}</span></div>
+              <button className="button button-primary demo-run" type="button" onClick={() => void runWalletOnlySimulation()} disabled={busy || !account}>{walletOnlyDemoState === "running" ? "Simulating…" : "Simulate stolen wallet"}</button>
+              {walletOnlyDemoMessage && <p className={`demo-message${walletOnlyDemoState === "passed" ? " is-good" : " is-bad"}`} role={walletOnlyDemoState === "failed" ? "alert" : "status"}>{walletOnlyDemoMessage}</p>}
+            </article>
+            <article className="legitimate-card" aria-labelledby="legitimate-title">
+              <div className="demo-card-top"><span className="demo-icon success-icon" aria-hidden="true">✓</span><span className="demo-label">Legitimate owner</span></div>
+              <h2 id="legitimate-title">Both factors approve</h2>
+              <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner address set as sender</li><li><span className={guardianReady && guardianMatched ? "check-good" : "check-pending"}>{guardianReady && guardianMatched ? "✓" : "–"}</span> Active PQ guardian signs exact account payload</li></ul>
+              <div className={`demo-result${twoFactorDemoState === "passed" ? " is-authorized" : twoFactorDemoState === "failed" ? " is-error" : ""}`}><span className="result-word">{twoFactorDemoState === "running" ? "Checking…" : twoFactorDemoState === "passed" ? "Authorized" : twoFactorDemoState === "failed" ? "Not verified" : "Ready to test"}</span><span>{twoFactorDemoState === "passed" ? "A valid two-factor authorization passed read-only simulation." : "Requires the active guardian restored in this tab."}</span></div>
+              <button className="button button-primary demo-run" type="button" onClick={() => void runTwoFactorSimulation()} disabled={busy || !guardianReady || !guardianMatched || !guardianActive}>{twoFactorDemoState === "running" ? "Simulating…" : "Simulate with both factors"}</button>
+              {!guardianReady && <p className="inline-hint">Restore the active guardian on Overview before running this simulation.</p>}
+              {twoFactorDemoMessage && <p className={`demo-message${twoFactorDemoState === "passed" ? " is-good" : " is-bad"}`} role={twoFactorDemoState === "failed" ? "alert" : "status"}>{twoFactorDemoMessage}</p>}
+            </article>
+          </div>
+          <div className="demo-explainer"><div><strong>What is being simulated?</strong><p>The first call tries a 1-base-unit USDC withdrawal with no PQ signature. The second signs a same-key guardian update using the current nonce. Each is a separate Arc Mainnet <code>eth_call</code>; neither submits a transaction or changes account state.</p></div><span className="read-only-tag">READ-ONLY</span></div>
+        </section>
+      )}
+
+      <footer className="site-footer"><span>Q2FA requires the EVM owner and active post-quantum guardian for protected actions.</span><a href="https://explorer.arc.io/address/0xa40524d1e9380d3b82752ec4bc074cc7e6272fb0" target="_blank" rel="noreferrer">View account on Arc Explorer ↗</a></footer>
     </main>
   );
-
 }
 
-function safeErrorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "shortMessage" in error && typeof error.shortMessage === "string") {
-    return error.shortMessage;
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return <div className="detail-row"><dt>{label}</dt><dd title={value}>{label === "Owner wallet" || label === "Guardian key" ? <ShortAddress value={value} /> : value}<span className="detail-copy">{label === "Current nonce" ? "LIVE" : ""}</span></dd></div>;
+}
+
+function ReviewRow({ label, value }: { label: string; value: string }) {
+  return <div><dt>{label}</dt><dd title={value}>{value}</dd></div>;
+}
+
+function TransactionConfirmation({
+  title,
+  hash,
+  fee,
+  gasUsed,
+  amount,
+  decimals,
+  recipient,
+  nonce,
+}: {
+  title: string;
+  hash: Hex;
+  fee: bigint;
+  gasUsed: bigint;
+  amount: bigint;
+  decimals: number;
+  recipient?: Address;
+  nonce?: bigint;
+}) {
+  return <div className="transaction-confirmation" role="status"><h3>✓ {title}</h3><dl><div><dt>Amount</dt><dd>{formatUsdc(amount, decimals)}</dd></div>{recipient && <div><dt>Recipient</dt><dd><ShortAddress value={recipient} /></dd></div>}{nonce !== undefined && <div><dt>Nonce used</dt><dd>{nonce.toString()}</dd></div>}<div><dt>Actual network fee</dt><dd>{formatUnits(fee, 18)} USDC</dd></div><div><dt>Gas used</dt><dd>{gasUsed.toString()}</dd></div></dl><a href={`${explorerTx}${hash}`} target="_blank" rel="noreferrer">View transaction <ShortAddress value={hash} /></a></div>;
+}
+
+async function getAccountLogsInChunks(fromBlock: bigint, toBlock: bigint): Promise<RawLog[]> {
+  return getActivityLogsInChunks(fromBlock, toBlock, (start, end) => publicClient.getLogs({
+    address: Q2FA_ACCOUNT,
+    events: [withdrawalEvent, ownerChangedEvent, guardianChangedEvent] as const,
+    fromBlock: start,
+    toBlock: end,
+  }) as unknown as Promise<RawLog[]>);
+}
+
+async function getDepositLogsInChunks(fromBlock: bigint, toBlock: bigint): Promise<RawLog[]> {
+  return getActivityLogsInChunks(fromBlock, toBlock, (start, end) => publicClient.getLogs({
+    address: ARC_USDC,
+    event: usdcTransferEvent,
+    args: { to: Q2FA_ACCOUNT },
+    fromBlock: start,
+    toBlock: end,
+  }) as unknown as Promise<RawLog[]>);
+}
+
+async function getActivityLogsInChunks(
+  fromBlock: bigint,
+  toBlock: bigint,
+  query: (fromBlock: bigint, toBlock: bigint) => Promise<RawLog[]>,
+): Promise<RawLog[]> {
+  const result: RawLog[] = [];
+  let pageSize = ACTIVITY_QUERY_CHUNK_BLOCKS;
+  let start = fromBlock;
+  let hasQueried = false;
+  while (start <= toBlock) {
+    let end = start + pageSize - 1n < toBlock ? start + pageSize - 1n : toBlock;
+    if (hasQueried) await delay(ACTIVITY_QUERY_DELAY_MS);
+    let retries = 0;
+    while (true) {
+      try {
+        result.push(...await query(start, end));
+        hasQueried = true;
+        start = end + 1n;
+        break;
+      } catch (cause) {
+        if (isLogRangeError(cause) && pageSize > 1n) {
+          pageSize = pageSize / 2n;
+          end = start + pageSize - 1n < toBlock ? start + pageSize - 1n : toBlock;
+          retries = 0;
+          await delay(ACTIVITY_QUERY_DELAY_MS);
+          continue;
+        }
+        if (isRateLimitError(cause) && retries < 3) {
+          retries += 1;
+          await delay(ACTIVITY_QUERY_DELAY_MS * retries * 2);
+          continue;
+        }
+        throw cause;
+      }
+    }
   }
-  if (error instanceof Error) return error.message;
-  return "The operation failed. Check the wallet prompt and current Arc Mainnet state.";
+  return result;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function errorChainText(error: unknown): string {
+  const messages: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 8 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (typeof current !== "object") break;
+    for (const key of ["name", "shortMessage", "details", "message"] as const) {
+      const value = Reflect.get(current, key);
+      if (typeof value === "string") messages.push(value);
+    }
+    current = Reflect.get(current, "cause");
+  }
+  return messages.join(" ").toLowerCase();
+}
+
+function isLogRangeError(error: unknown): boolean {
+  const message = errorChainText(error);
+  return /requested range too large|request(?:ed)? range.{0,40}(?:exceed|limit|large)|exceeds defined limit|limitexceededrpcerror/.test(message);
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = errorChainText(error);
+  return /rate limit exceeded|too many requests|ratelimitexceededrpcerror/.test(message);
+}
+
+function decodeQ2faLog(log: RawLog): { eventName: string; args: Record<string, unknown> } | undefined {
+  try {
+    if (log.topics.length === 0) return undefined;
+    return decodeEventLog({
+      abi: [withdrawalEvent, ownerChangedEvent, guardianChangedEvent],
+      data: log.data,
+      topics: [...log.topics] as [Hex, ...Hex[]],
+    }) as unknown as { eventName: string; args: Record<string, unknown> };
+  } catch {
+    return undefined;
+  }
+}
+
+async function assertContractPayload(action: 0 | 1 | 2, subject: Hex, amount: bigint, deadline: bigint, clientPayload: Hex) {
+  const onchainPayload = await publicClient.readContract({
+    address: Q2FA_ACCOUNT,
+    abi: q2faAccountAbi,
+    functionName: "authorizationPayload",
+    args: [action, subject, amount, deadline],
+  });
+  if (clientPayload.toLowerCase() !== onchainPayload.toLowerCase()) {
+    throw new Error("The client payload does not match the deployed contract encoding. No signature was submitted.");
+  }
+}
+
+async function estimateFee(gasEstimate: bigint): Promise<{ gasLimit: bigint; pricePerGas: bigint; projectedFee: bigint }> {
+  const fees = await publicClient.estimateFeesPerGas();
+  const pricePerGas = ("maxFeePerGas" in fees ? fees.maxFeePerGas : undefined)
+    ?? ("gasPrice" in fees ? fees.gasPrice : undefined);
+  if (!pricePerGas || pricePerGas <= 0n) throw new Error("Arc did not provide a usable gas price.");
+  const gasLimit = gasEstimate + (gasEstimate + 4n) / 5n;
+  return { gasLimit, pricePerGas, projectedFee: gasLimit * pricePerGas };
+}
+
+function parsePositiveUsdc(value: string, decimals: number): bigint {
+  const text = value.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) throw new Error("Enter a USDC amount using digits and an optional decimal point.");
+  if ((text.split(".")[1]?.length ?? 0) > decimals) throw new Error(`Arc USDC supports up to ${decimals} decimal places.`);
+  const parsed = parseUnits(text, decimals);
+  if (parsed <= 0n) throw new Error("Enter an amount greater than zero.");
+  return parsed;
+}
+
+function logToActivity(log: RawLog, action: ActivityEntry["action"], amount?: bigint, address?: Address, addressLabel?: string): ActivityEntry {
+  if (log.blockNumber === null || log.transactionHash === null) throw new Error("Arc returned an incomplete account activity log.");
+  return {
+    id: `${log.transactionHash}-${log.logIndex ?? 0}`,
+    action,
+    amount,
+    address,
+    addressLabel,
+    blockNumber: log.blockNumber,
+    transactionHash: log.transactionHash,
+  };
+}
+
+function isOwnerWallet(wallet: ConnectedWallet, owner: Address): boolean {
+  return wallet.address.toLowerCase() === owner.toLowerCase();
+}
+
+function wipeGuardian(material: GuardianMaterial | null): void {
+  material?.secretKey.fill(0);
+}
+
+function safeAddressPreview(value: string): string {
+  return /^0x[0-9a-fA-F]{40}$/.test(value.trim()) ? `${value.trim().slice(0, 10)}…${value.trim().slice(-8)}` : "Enter valid address";
+}
+
+function safeAmountPreview(value: string): string {
+  return /^\d+(?:\.\d+)?$/.test(value.trim()) ? `${value.trim()} USDC` : "Enter valid amount";
+}
+
+function shortAddress(value: string): string {
+  return value.length < 20 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+async function copyText(value: string): Promise<void> {
+  await navigator.clipboard.writeText(value);
+}
+
+function userError(cause: unknown): string {
+  const customError = extractContractErrorName(cause, q2faAccountAbi);
+  const knownErrors: Record<string, string> = {
+    AuthorizationExpired: "This authorization expired. Prepare a new action with a fresh deadline.",
+    InvalidPQSignature: "The post-quantum guardian signature did not match this action.",
+    InvalidPQSignatureLength: "The guardian signature has an unexpected size.",
+    NotOwner: "Connected wallet is not the Q2FA owner.",
+    ZeroRecipient: "The zero address cannot receive protected USDC.",
+    ZeroAmount: "Enter an amount greater than zero.",
+    USDCTransferFailed: "The USDC transfer failed. Check the protected balance and Arc USDC status.",
+    PQVerifierUnavailable: "Arc’s post-quantum verifier did not respond. Try again later.",
+    LimitExceededRpcError: "Arc’s RPC rejected the event range. Activity will retry using smaller pages.",
+    RateLimitExceededRpcError: "Arc’s RPC is rate limiting activity reads. Wait a moment, then refresh activity.",
+  };
+  if (customError && knownErrors[customError]) return knownErrors[customError]!;
+  if (typeof cause === "object" && cause !== null && "shortMessage" in cause && typeof cause.shortMessage === "string") {
+    return sanitizeDiagnosticText(cause.shortMessage);
+  }
+  if (cause instanceof Error) {
+    const message = sanitizeDiagnosticText(cause.message);
+    return message || "The operation failed. Check the wallet and Arc Mainnet state.";
+  }
+  return "The operation failed. Check the wallet and Arc Mainnet state.";
+}
+
+function sanitizeDiagnosticText(message: string): string {
+  return message.replace(/0x[0-9a-fA-F]{64,}/g, "[transaction data]").slice(0, 240);
 }
