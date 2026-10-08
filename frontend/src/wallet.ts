@@ -53,6 +53,7 @@ export async function switchToArcMainnet(provider = window.ethereum): Promise<vo
         rpcUrls: [ARC_RPC_URL],
       }],
     });
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId }] });
   }
 }
 

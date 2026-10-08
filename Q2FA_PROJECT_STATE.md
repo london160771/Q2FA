@@ -2,9 +2,26 @@
 
 ## Status
 
-**Phase 1 — Smart Account Core: PASS.**
+**Phase 1 — Smart Account Core: PASS (historical).**
 
-The Phase 1 local review and Arc Mainnet gate completed. Stop here pending review; the next planned phase is Phase 2 — Guardian Client + End-to-End Authorization.
+**Phase 2 clean redeploy: PASS — complete.** The original Phase 1/early Phase 2 account `0xc27bd794db0e7d2cf636fbd7872d05e92cc295d2` remains an abandoned development deployment and must not be used. The fresh account below completed guardian backup/restore, deposit, read-only simulations, and protected withdrawal to Wallet B.
+
+## Phase 2 Clean Redeploy — Complete
+
+- Result: **PASS**. Phase 2 is complete; the next phase is Phase 3 — Dashboard.
+- The old account `0xc27bd794db0e7d2cf636fbd7872d05e92cc295d2` remains an abandoned development deployment. It was not recovered, weakened, reused, or redeployed over.
+- A fresh SLH-DSA-SHA2-128s guardian was generated locally. Its seed was backed up outside source control before deployment, then restored and verified to reproduce the same public key. A local sign/verify round-trip passed. The active guardian seed remains outside source control; no secrets were committed.
+- New guardian public key: `0xe2234e490c1a42c30104d059aad16473811694a715a33f31d8c8a0a9dabe4566`.
+- Fresh Arc Mainnet account: `0xa40524d1e9380d3b82752ec4bc074cc7e6272fb0`.
+- Deployment transaction: `0x49202da9dd6b7d1b233ccf039597672c01ae9d83cd24dd3240650add384056ad`; block `24896834`; status `success`; gas used `621,069`; effective gas price `20 gwei`; fee `0.01242138 USDC`.
+- RPC readback confirmed owner Wallet A, the new guardian public key, and initial nonce `0`.
+- The client restore/import flow works: importing the backed-up seed derives the active guardian locally, matches the deployed `guardianKey()`, and keeps the private material in memory only.
+- Tiny deposit: `0.000001 USDC`; transaction `0x250b846795c302a8dd67c5b46063379d6527a85196e91771d5ac1d36c2e95c26`; network fee `0.000978520074416446 USDC`.
+- Protected withdrawal to Wallet B: `0.000001 USDC`; transaction `0xb883911a18724ef6a31ed6f9ca3f54a13847ca5413b2efcd69fa18eb76e2e56a`; network fee `0.009402520715061646 USDC`. Wallet B received the stated amount. Nonce advanced exactly once, `0 → 1`.
+- Read-only simulations passed: valid signature; changed recipient rejected; changed amount rejected; stale nonce rejected; expired authorization rejected; non-owner rejected; corrupted PQ signature rejected; changed action rejected.
+- `npm run check` passed: 6 frontend tests, 2 backend tests, 26 Solidity tests, all workspace typechecks and builds.
+- Deposit plus withdrawal network fees: `0.010381040789478092 USDC`. Phase 2 total including deployment: `0.022802420789478092 USDC`. Cumulative project network fees including recorded Phase 0/1 fees of `0.02979862 USDC`: `0.052601040789478092 USDC`.
+- No further Mainnet action is required for Phase 2.
 
 ## Network and Wallet
 
@@ -51,9 +68,9 @@ Arc documentation confirms the USDC ERC-20 interface uses six decimals, shares i
 - Dependency audit: zero known vulnerabilities reported after pinning the affected transitive `tmp` dependency to `0.2.7`.
 - Dedicated code review found no unresolved critical or high issue in payload/domain binding, verifier interaction, nonce/deadline handling, authorization on all three methods, or withdrawal state/transfer ordering.
 
-Residual risks: the Arc PQ precompile is documented as experimental; local Solidity tests mock its cryptographic implementation, while the Mainnet protected-withdrawal probe below provides the live integration check. Production client-side guardian generation, backup, and signing UX remain unimplemented. The development guardian is not a production key.
+Residual risks: the Arc PQ precompile is documented as experimental; local Solidity tests mock its cryptographic implementation, while the successful Phase 2 Mainnet withdrawal provides a live integration check. The Phase 2 guardian client is a development interface and still needs product-level usability and security review before production use. Guardian backup remains user-managed; there is no cloud recovery. The historical Phase 1 development guardian is not a production key.
 
-## Arc Mainnet Deployment and Interaction
+## Historical Phase 1 Arc Mainnet Deployment and Interaction — Original Account Abandoned
 
 Signer preflight resolved to Wallet A. Initial native gas balance was `0.25241452 USDC`; current base fee was `20 gwei`. The transaction script simulated/estimated each action, verified chain and signer before every broadcast, and kept maximum-fee exposure below its `0.10 USDC` Phase 1 cap.
 
@@ -89,4 +106,4 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 
 ## Exact Next Phase
 
-**Phase 2 — Guardian Client + End-to-End Authorization.** Begin only after review of this Phase 1 result. Implement the client-side guardian flow and complete the next phase's specified tests; do not expand scope beyond `Q2FA_PLAN.md`.
+**Phase 3 — Dashboard.** Phase 2 is complete; begin Phase 3 only after review and explicit instruction.

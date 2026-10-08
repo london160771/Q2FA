@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite --configLoader runner",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "npm run typecheck && vite build --configLoader runner"
+    "build": "npm run typecheck && vite build --configLoader runner",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@noble/post-quantum": "^0.7.1",
     "@q2fa/shared": "1.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

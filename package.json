@@ -16,8 +16,9 @@
     "build": "npm run build --workspaces --if-present",
     "test:contracts": "npm run test --workspace=@q2fa/contracts",
     "test:backend": "npm run test --workspace=@q2fa/backend",
+    "test:frontend": "npm run test --workspace=@q2fa/frontend",
     "gas:contracts": "npm run gas --workspace=@q2fa/contracts",
-    "check": "npm run typecheck && npm run build && npm run test:backend && npm run test:contracts"
+    "check": "npm run typecheck && npm run build && npm run test:frontend && npm run test:backend && npm run test:contracts"
   },
   "dependencies": {
     "@noble/post-quantum": "^0.7.1",
