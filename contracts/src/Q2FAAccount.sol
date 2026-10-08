@@ -3,6 +3,7 @@ pragma solidity ^0.8.30;
 
 import {IArcPQVerifier} from "./interfaces/IArcPQVerifier.sol";
 import {IArcUSDC} from "./interfaces/IArcUSDC.sol";
+import {IQ2FAAccountRegistry} from "./interfaces/IQ2FAAccountRegistry.sol";
 
 /// @title Q2FAAccount
 /// @notice Arc Mainnet account requiring its EVM owner and SLH-DSA guardian for each protected action.
@@ -23,6 +24,7 @@ contract Q2FAAccount {
     address public owner;
     bytes32 public guardianKey;
     uint256 public nonce;
+    address public immutable registry;
 
     error NotOwner();
     error AuthorizationExpired();
@@ -39,11 +41,12 @@ contract Q2FAAccount {
     event OwnerChanged(address indexed previousOwner, address indexed newOwner, uint256 indexed nonce);
     event GuardianChanged(bytes32 previousKey, bytes32 newKey, uint256 indexed nonce);
 
-    constructor(address initialOwner, bytes32 initialGuardianKey) {
+    constructor(address initialOwner, bytes32 initialGuardianKey, address accountRegistry) {
         if (initialOwner == address(0)) revert ZeroOwner();
         if (initialGuardianKey == bytes32(0)) revert ZeroGuardian();
         owner = initialOwner;
         guardianKey = initialGuardianKey;
+        registry = accountRegistry;
     }
 
     modifier onlyOwner() {
@@ -101,6 +104,9 @@ contract Q2FAAccount {
 
         address previousOwner = owner;
         owner = newOwner;
+        if (registry != address(0)) {
+            IQ2FAAccountRegistry(registry).onOwnerChanged(previousOwner, newOwner);
+        }
         emit OwnerChanged(previousOwner, newOwner, usedNonce);
     }
 

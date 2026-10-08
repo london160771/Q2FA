@@ -50,14 +50,13 @@ Local unit tests are allowed and required where useful.
 
 ## Known Wallet Roles
 
-### Wallet A — owner / deployer
+### Wallet A — historical demo owner / deployer
 `0x90e3a58694e953f5eC4018fF7dd57BE036f11FcE`
 
 Responsibilities:
-- deploy contracts;
-- act as initial Q2FA owner;
-- submit owner-authorized transactions;
-- pay Arc Mainnet gas during development.
+- serve as the original Phase 1–3 demo deployer and example account owner;
+- remain a test/development fixture, not a global product owner;
+- never define active dashboard state for other connected wallets.
 
 ### Wallet B — demo recipient
 `0x815C2fb8178F0bf80aDa8C5B97fF44Ece90e6e25`
@@ -65,6 +64,8 @@ Responsibilities:
 Responsibilities:
 - receive successful demo withdrawals;
 - remain separate from the owner wallet.
+
+Normal product account state is discovered from the connected wallet through the Arc Mainnet Q2FA account factory. The factory sets each account owner from `msg.sender`; frontend-provided owner addresses are never trusted.
 
 Never require or store either wallet's private key in source control.
 

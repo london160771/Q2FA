@@ -103,7 +103,7 @@ contract Q2FAAccountTest {
     MockArcUSDC private usdc;
 
     function setUp() public {
-        account = new Q2FAAccount(OWNER, GUARDIAN);
+        account = new Q2FAAccount(OWNER, GUARDIAN, address(0));
 
         MockArcPQVerifier verifierCode = new MockArcPQVerifier();
         vm.etch(account.PQ_VERIFIER(), address(verifierCode).code);
@@ -400,10 +400,10 @@ contract Q2FAAccountTest {
 
     function testConstructorRejectsZeroOwnerAndGuardian() public {
         vm.expectRevert(Q2FAAccount.ZeroOwner.selector);
-        new Q2FAAccount(address(0), GUARDIAN);
+        new Q2FAAccount(address(0), GUARDIAN, address(0));
 
         vm.expectRevert(Q2FAAccount.ZeroGuardian.selector);
-        new Q2FAAccount(OWNER, bytes32(0));
+        new Q2FAAccount(OWNER, bytes32(0), address(0));
     }
 
     function _expect(

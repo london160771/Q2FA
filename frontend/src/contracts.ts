@@ -10,6 +10,7 @@ export const q2faAccountAbi = [
   { type: "error", name: "ZeroAmount", inputs: [] },
   { type: "error", name: "USDCTransferFailed", inputs: [] },
   { type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "registry", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
   { type: "function", name: "guardianKey", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
   { type: "function", name: "nonce", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   {
@@ -46,6 +47,36 @@ export const q2faAccountAbi = [
       { name: "pqSignature", type: "bytes" },
     ],
     outputs: [],
+  },
+] as const satisfies Abi;
+
+export const q2faAccountFactoryAbi = [
+  { type: "error", name: "ZeroGuardian", inputs: [] },
+  { type: "error", name: "AccountAlreadyExists", inputs: [{ name: "owner", type: "address" }, { name: "account", type: "address" }] },
+  { type: "error", name: "UnregisteredAccount", inputs: [] },
+  { type: "error", name: "InvalidOwnerChange", inputs: [] },
+  { type: "function", name: "accountOf", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ type: "address" }] },
+  { type: "function", name: "accountCreatedBlock", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "createAccount", stateMutability: "nonpayable", inputs: [{ name: "guardianKey", type: "bytes32" }], outputs: [{ name: "account", type: "address" }] },
+  {
+    type: "event",
+    name: "AccountCreated",
+    anonymous: false,
+    inputs: [
+      { name: "owner", type: "address", indexed: true },
+      { name: "account", type: "address", indexed: true },
+      { name: "guardianKey", type: "bytes32", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "AccountOwnerChanged",
+    anonymous: false,
+    inputs: [
+      { name: "previousOwner", type: "address", indexed: true },
+      { name: "newOwner", type: "address", indexed: true },
+      { name: "account", type: "address", indexed: true },
+    ],
   },
 ] as const satisfies Abi;
 

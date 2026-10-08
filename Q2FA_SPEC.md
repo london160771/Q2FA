@@ -81,26 +81,33 @@ User connects a normal EVM wallet.
 The app verifies:
 - Arc Mainnet network;
 - connected owner address;
-- account state if already deployed.
+- that wallet's factory-registered account, if one exists;
+- otherwise it shows the account-creation onboarding state.
 
-### 6.2 Create Q2FA account
+With no connected wallet, the app shows no active user account. A documented demo deployment is not used as a fallback.
 
-User creates a Q2FA smart account.
+### 6.2 Generate guardian
+
+The browser/client generates an SLH-DSA-SHA2-128s keypair locally.
+
+The private key must stay client-side.
+
+The public key is registered with the Q2FA account only after the user has exported and restored the backup locally. The seed remains client-side and account creation is gated on the restore check.
+
+The UI must clearly warn the user that losing the guardian secret can lock protected operations.
+
+### 6.3 Create Q2FA account
+
+User creates a Q2FA smart account through `Q2FAAccountFactory.createAccount(guardianKey)`.
+
+The factory derives the owner from `msg.sender`, records one account per owner, and exposes `accountOf(owner)` for discovery. The frontend never supplies an owner address to claim.
 
 The account records:
 - EVM owner;
 - PQ guardian public key;
 - nonce state.
 
-### 6.3 Generate guardian
-
-The browser/client generates an SLH-DSA-SHA2-128s keypair locally.
-
-The private key must stay client-side.
-
-The public key is registered with the Q2FA account.
-
-The UI must clearly warn the user that losing the guardian secret can lock protected operations.
+Creating a second factory account for the same current owner is rejected. When an account owner is changed through the existing two-factor protected action, its factory discovery record moves atomically; a change to an owner who already has an account is rejected.
 
 ### 6.4 Deposit
 

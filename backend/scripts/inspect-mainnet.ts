@@ -5,7 +5,7 @@ import {
 import {
   ARC_CHAIN_ID,
   ARC_USDC,
-  WALLET_A,
+  DEMO_OWNER_WALLET,
 } from "@q2fa/shared";
 import { arcPublicClient } from "../src/arc.js";
 
@@ -19,8 +19,8 @@ async function main(): Promise<void> {
   if (chainId !== ARC_CHAIN_ID) throw new Error(`RPC chain ID mismatch: ${chainId}`);
 
   const [nativeBalance, usdcBalance, decimals, latestBlock, gasPrice] = await Promise.all([
-    arcPublicClient.getBalance({ address: WALLET_A }),
-    arcPublicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [WALLET_A] }),
+    arcPublicClient.getBalance({ address: DEMO_OWNER_WALLET }),
+    arcPublicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "balanceOf", args: [DEMO_OWNER_WALLET] }),
     arcPublicClient.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: "decimals" }),
     arcPublicClient.getBlock({ blockTag: "latest" }),
     arcPublicClient.getGasPrice(),
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   if (decimals !== 6) throw new Error(`Unexpected Arc USDC ERC-20 decimals: ${decimals}`);
 
   console.log(`Network chain ID: ${chainId}`);
-  console.log(`Wallet A public address: ${WALLET_A}`);
+  console.log(`Demo owner wallet public address: ${DEMO_OWNER_WALLET}`);
   console.log(`Native USDC gas balance (18 decimals): ${formatUnits(nativeBalance, 18)} USDC`);
   console.log(`ERC-20 USDC balance (6 decimals): ${formatUnits(usdcBalance, decimals)} USDC`);
   console.log(`Latest block: ${latestBlock.number?.toString() ?? "unavailable"}`);

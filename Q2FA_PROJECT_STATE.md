@@ -8,6 +8,10 @@
 
 **Phase 3 — Dashboard: PASS.** Activity reads real Arc Mainnet logs through bounded, topic-filtered direct RPC pages. Both live Security Demo simulations were verified against the deployed account using read-only `eth_call`; the EVM-only attempt was blocked and the active guardian authorization was accepted. No Mainnet transaction was sent during Phase 3 verification.
 
+**Phase 3.5 — Layout + Visual Redesign: PASS.** Nested routing, the fixed application shell, separate Deposit and Docs pages, and the graphite/cyan visual system are complete. Phase 4 has not started.
+
+**Phase 3.6 — Multi-user Q2FA Accounts: local implementation complete; Mainnet factory deployment pending separate review and authorization.** The product no longer treats the original demo account as a default user account. Factory-based discovery and onboarding are implemented locally, but live multi-user account creation is not enabled because the factory has not been deployed.
+
 ## Phase 3 Dashboard — Complete
 
 - Implemented the four requested dashboard sections: Security Overview, Send USDC, Activity, and Security Demo. The overview reads owner, guardian, nonce, and protected USDC balance live from the deployed account and Arc Mainnet. It explains the two required factors and warns that funds in the normal wallet are not protected.
@@ -22,6 +26,22 @@
 - No paid Mainnet transaction was submitted. No secrets were read, persisted, or exposed. No database or contract behavior was added.
 
 Phase 3 verification is complete. No unresolved critical or high security issue was found in this phase. The main JavaScript bundle size warning remains a non-blocking optimization item; guardian cryptography is lazy-loaded separately. The guardian seed remains user-managed and memory-only in the client.
+
+## Phase 3.5 Layout + Visual Redesign — Complete
+
+- Replaced top-level tabs with nested React Router routes: `/` redirects to `/overview`; `/overview`, `/send`, `/deposit`, `/activity`, `/security`, and `/docs` render inside a shared `AppShell`.
+- The shell uses a fixed, non-scrolling sidebar and header with an independently scrolling route outlet. On mobile the sidebar becomes an accessible drawer that closes after navigation and supports Escape. Browser back/forward and URL-based active navigation use React Router.
+- Reworked the product styling into a graphite/charcoal security interface with icy cyan as the brand accent. Green is reserved for successful/active states. Factor 1 + Factor 2 = Protected action is shown consistently on Overview, Send, Security Demo, and Docs.
+- Overview still reads live owner, guardian, nonce, and protected USDC from Arc Mainnet; includes guardian restore, protection limits, and an activity entry point. Send retains the existing local guardian signature, Arc simulation, gas estimate, and owner-wallet submission handlers. Activity retains the existing paginated direct-RPC event query.
+- Moved the existing deposit flow to `/deposit` with separate live wallet/protected balances, the Arc fee preview, and an explicit explanation that protection starts only after USDC enters the Q2FA account. No deposit was submitted during this phase.
+- Added a concise in-app Docs page with all 11 requested topics, including the deployed account and owner. It documents limits and user-managed guardian backup without making recovery or quantum-proof claims.
+- Routing tests cover nested route rendering, active sidebar state, redirects, Deposit/Docs routes, shared header controls, and mobile-navigation semantics. Final `npm run check` passed: workspace typechecks/builds; 19 frontend tests; 2 backend tests; and 26 Solidity tests. `git diff --check` passed.
+- Runtime incident verified and resolved on 2026-10-08: the prior Vite process returned HTTP `504 Outdated Optimize Dep` for its stale optimized `react-router-dom` module, so the browser could not evaluate `main.tsx` and `#root` stayed empty. A fresh local Vite server started with `--force` logged forced dependency re-optimization and mounted the unchanged app. No router/component code or Activity query logic needed modification.
+- On the fresh dev server, `/` redirected to `/overview`; `/overview`, `/send`, `/deposit`, `/activity`, `/security`, and `/docs` all rendered after direct URL loads and refreshes. Browser back/forward and active sidebar navigation were verified. The reloaded `/activity` paginated scan displayed the real `0.000001 USDC` deposit and protected withdrawal with Arc transaction links; no transaction was sent and no activity logic was changed.
+- Manually reviewed the production preview at 1440×900, 768×900, and 375×812. Sidebar and header remain fixed while the outlet scrolls; the mobile drawer opens, focuses the first navigation link, changes route, and closes. At 375px, the document width remained 375px with no horizontal or body-level vertical overflow; the route outlet scrolls independently.
+- No contract, guardian, authorization, deployment, or Mainnet transaction behavior was changed. No database or secret persistence was introduced. The existing `/activity` page still reads real Arc data and the Phase 3 Mainnet events verified above remain the source; no history is hardcoded.
+
+No critical/high issue was introduced. The Vite build still reports a non-blocking main JavaScript chunk size warning (about 597 KB minified, 184 KB gzip); PQ guardian code remains separately lazy-loaded. Phase 4 has not started.
 
 ## Phase 2 Clean Redeploy — Complete
 
@@ -60,7 +80,7 @@ shared/     Arc Mainnet constants and deterministic authorization encoding
 scripts/    Preserved Phase 0 script
 ```
 
-Root npm workspaces coordinate the four packages. The frontend now contains the Phase 3 dashboard. There is no database, server authentication, hosted service, or proxy.
+Root npm workspaces coordinate the four packages. The frontend contains the Phase 3 dashboard and Phase 3.5 routed application shell. There is no database, server authentication, hosted service, or proxy.
 
 ## Contract Architecture Implemented
 
@@ -123,4 +143,19 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 
 ## Exact Next Phase
 
-**Phase 3 is complete. Next: Phase 4, only after separate authorization. Phase 4 has not started.**
+## Phase 3.6 — Multi-user Account Architecture
+
+- Added a minimal Arc Mainnet-only factory source. `createAccount(bytes32)` takes no owner argument; the account owner is `msg.sender`. Duplicate creation is rejected, `accountOf(owner)` exposes discovery, and `accountCreatedBlock(account)` supplies the correct Activity scan start.
+- Factory-created accounts hold an immutable factory registry reference. A valid two-factor `changeOwner` atomically updates discovery; transfer to an owner who already has an account reverts the full owner change.
+- The frontend now discovers the account for the connected wallet, verifies the live account owner, and scopes balances, guardian, nonce, withdrawal/deposit target, simulations, and Activity to that account. Disconnected users see a neutral connect state. No account is shown as active if factory discovery is unavailable.
+- New-account onboarding generates the guardian in the browser, downloads a local seed file only after a user action, requires re-import and a local sign/verify round-trip before account creation, and keeps private material in tab memory.
+- The old `0xa40524d1e9380d3b82752ec4bc074cc7e6272fb0` deployment remains an unchanged, unregistered legacy demo. It is explicitly labelled in Docs and is not a fallback for Wallet A or any other connected wallet.
+- No factory deployment or other Mainnet transaction was sent. The Mainnet factory address is not configured, so account creation is unavailable in this checkout pending review/approval.
+- Local validation passed: `npm run check` (25 frontend tests, 2 backend tests, 34 Solidity tests; typecheck and workspace builds passed), and `git diff --check` passed. Hardhat required the same temporary OS-user-info shim used by prior local checks; the shim was removed afterward. The frontend build retains a non-blocking large-bundle warning.
+- Read-only Arc Mainnet estimate confirmed chain ID `5042`: factory creation bytecode `4,172` bytes; `eth_estimateGas` `954,802`; gas price `20,000,000,003 wei`; base fee `20,000,000,000 wei`; projected factory deployment fee `19,096,040,957,666,406` native units (`0.019096040957666406 USDC`). This is an estimate, not a transaction or spend. A later `createAccount` call cannot be estimated against Mainnet until the factory exists.
+- Phase 3.6 Mainnet spend: `0 USDC`. Recorded cumulative project network fees remain `0.052601040789478092 USDC`.
+- Deployment plan after authorization: deploy one non-upgradeable `Q2FAAccountFactory` on Arc Mainnet, verify its bytecode/chain and `accountOf` behavior, then configure the frontend factory address. Each user creation is a separate owner-submitted transaction after local guardian backup verification.
+- Migration impact: the existing direct-deployed demo account remains valid and untouched, but is not in the new factory registry. It will remain a labelled demo unless a separate explicit migration design is approved.
+- Remaining live risks: factory deployment and live account creation have not been exercised; the existing demo deployment cannot be discovered through the new factory. No Phase 4 work has started.
+
+**Phase 3.6 local implementation is complete; Mainnet activation awaits review/authorization. Phase 4 has not started.**

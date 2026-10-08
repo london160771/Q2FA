@@ -12,6 +12,7 @@ import {
   parseAbi,
   parseUnits,
   toHex,
+  zeroAddress,
   type Abi,
   type Address,
   type Hex,
@@ -20,7 +21,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import {
   ARC_CHAIN_ID,
   ARC_RPC_URL,
-  WALLET_A,
+  DEMO_OWNER_WALLET,
   arcMainnet,
 } from "@q2fa/shared";
 
@@ -50,7 +51,7 @@ class SafeFailure extends Error {}
 
 function requireArcAndWalletA(signerAddress: Address, chainId: number): void {
   if (chainId !== ARC_CHAIN_ID) throw new SafeFailure(`RPC chain ID was ${chainId}; expected Arc Mainnet ${ARC_CHAIN_ID}.`);
-  if (signerAddress.toLowerCase() !== WALLET_A.toLowerCase()) {
+  if (signerAddress.toLowerCase() !== DEMO_OWNER_WALLET.toLowerCase()) {
     throw new SafeFailure("DEPLOYER_PRIVATE_KEY does not resolve to Wallet A. No transaction was sent.");
   }
 }
@@ -96,7 +97,7 @@ async function main(): Promise<void> {
     }
 
     const [nativeBalance, block, suggestedGasPrice] = await Promise.all([
-      publicClient.getBalance({ address: WALLET_A }),
+      publicClient.getBalance({ address: DEMO_OWNER_WALLET }),
       publicClient.getBlock({ blockTag: "latest" }),
       publicClient.getGasPrice(),
     ]);
@@ -110,7 +111,7 @@ async function main(): Promise<void> {
     const deploymentData = encodeDeployData({
       abi: artifact.abi,
       bytecode: rawBytecode as Hex,
-      args: [WALLET_A, guardianKey],
+      args: [DEMO_OWNER_WALLET, guardianKey, zeroAddress],
     });
 
     requireArcAndWalletA(signer.address, await publicClient.getChainId());
@@ -147,7 +148,7 @@ async function main(): Promise<void> {
     console.log(`Current base fee: ${baseFeePerGas.toString()} wei/gas`);
     console.log(`Expected gas price: ${expectedGasPrice.toString()} wei/gas`);
     console.log(`Q2FA deployment calldata bytes: ${(deploymentData.length - 2) / 2}`);
-    console.log(`Initial owner: ${WALLET_A}`);
+    console.log(`Initial owner: ${DEMO_OWNER_WALLET}`);
     console.log(`Initial guardian public key: ${guardianKey}`);
     console.log(`Deployment gas estimate: ${deploymentGas.toString()}`);
     console.log(`Projected deployment fee: ${formatUnits(deploymentFeeEstimate, 18)} USDC`);
@@ -156,7 +157,7 @@ async function main(): Promise<void> {
     console.log(`Projected Phase 2 maximum after this deployment: ${formatUnits(projectedPhase2Maximum, 18)} USDC`);
 
     requireArcAndWalletA(signer.address, await publicClient.getChainId());
-    const balanceBeforeBroadcast = await publicClient.getBalance({ address: WALLET_A });
+    const balanceBeforeBroadcast = await publicClient.getBalance({ address: DEMO_OWNER_WALLET });
     if (balanceBeforeBroadcast < projectedPhase2Maximum) {
       throw new SafeFailure("Wallet A's balance changed below the reviewed budget. No transaction was sent.");
     }
@@ -193,7 +194,7 @@ async function main(): Promise<void> {
       publicClient.readContract({ address: receipt.contractAddress, abi: q2faAbi, functionName: "nonce" }),
     ]);
     if (!code || code === "0x") throw new SafeFailure("The new account has no deployed runtime code.");
-    if (deployedOwner.toLowerCase() !== WALLET_A.toLowerCase()) throw new SafeFailure("Deployed owner did not match Wallet A.");
+    if (deployedOwner.toLowerCase() !== DEMO_OWNER_WALLET.toLowerCase()) throw new SafeFailure("Deployed owner did not match the demo owner wallet.");
     if (deployedGuardian.toLowerCase() !== guardianKey.toLowerCase()) throw new SafeFailure("Deployed guardian did not match the backed-up guardian.");
     if (nonce !== 0n) throw new SafeFailure("The new account nonce was not the expected initial value of zero.");
 

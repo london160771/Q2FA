@@ -39,6 +39,14 @@ The normal EVM wallet is Factor 1.
 
 The locally held post-quantum guardian is Factor 2.
 
+### Account discovery and creation
+
+`Q2FAAccountFactory` is the minimal public registry and creation point. `createAccount(bytes32 guardianKey)` always uses `msg.sender` as owner, creates one account per current owner, records the account and its creation block, and emits `AccountCreated`. `accountOf(owner)` is the discovery lookup. There is no backend registry or factory administrator.
+
+Factory-created accounts hold the factory address as an immutable registry reference. After a correctly authorized owner change, the account calls `onOwnerChanged(previousOwner, newOwner)` atomically. The factory accepts this only from the account registered to the previous owner and rejects a target owner who already has an account. A rejected registry update reverts the owner change and nonce consumption with the whole transaction.
+
+The existing directly deployed Phase 1–3 account is an unregistered legacy demo fixture. It is preserved and documented, but is not substituted for a connected wallet's factory-discovered account.
+
 ---
 
 ## 2. Arc Mainnet Dependencies
@@ -274,6 +282,7 @@ Requirements:
 
 After success:
 - update owner;
+- atomically update the factory owner-to-account mapping when the account was factory-created;
 - increment nonce;
 - emit `OwnerChanged`.
 

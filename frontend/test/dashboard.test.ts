@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AuthorizationAction, ARC_CHAIN_ID, Q2FA_ACCOUNT, WALLET_A, WALLET_B, addressSubject } from "@q2fa/shared";
+import { AuthorizationAction, ARC_CHAIN_ID, DEMO_Q2FA_ACCOUNT, DEMO_OWNER_WALLET, DEMO_RECIPIENT_WALLET, addressSubject } from "@q2fa/shared";
 import { ActivityFeed, SecurityStatusCard } from "../src/dashboard-components.js";
 import {
   buildWithdrawalPayload,
@@ -21,7 +21,7 @@ const txHash = `0x${"cd".repeat(32)}` as `0x${string}`;
 
 test("security overview renders live owner, active guardian, and current nonce", () => {
   const html = renderToStaticMarkup(React.createElement(SecurityStatusCard, {
-    owner: WALLET_A,
+    owner: DEMO_OWNER_WALLET,
     guardianKey,
     nonce: 41n,
     ownerActive: true,
@@ -44,16 +44,16 @@ test("active guardian import comparison accepts a match and rejects a mismatch",
 
 test("send form rejects invalid recipient and invalid or over-balance amounts", () => {
   assert.throws(() => validateSendRequest("bad-address", "1", 2_000_000n), /valid EVM recipient/);
-  assert.throws(() => validateSendRequest(WALLET_B, "0", 2_000_000n), /greater than zero/);
-  assert.throws(() => validateSendRequest(WALLET_B, "1.0000001", 2_000_000n), /up to 6 decimal/);
-  assert.throws(() => validateSendRequest(WALLET_B, "3", 2_000_000n), /exceeds the protected/);
+  assert.throws(() => validateSendRequest(DEMO_RECIPIENT_WALLET, "0", 2_000_000n), /greater than zero/);
+  assert.throws(() => validateSendRequest(DEMO_RECIPIENT_WALLET, "1.0000001", 2_000_000n), /up to 6 decimal/);
+  assert.throws(() => validateSendRequest(DEMO_RECIPIENT_WALLET, "3", 2_000_000n), /exceeds the protected/);
 });
 
 test("protected withdrawal builder returns a deterministic withdraw action payload", () => {
   const payload = buildWithdrawalPayload({
     chainId: ARC_CHAIN_ID,
-    account: Q2FA_ACCOUNT,
-    subject: addressSubject(WALLET_B),
+    account: DEMO_Q2FA_ACCOUNT,
+    subject: addressSubject(DEMO_RECIPIENT_WALLET),
     amount: 1n,
     nonce: 3n,
     deadline: 1_900_000_000n,
@@ -61,16 +61,16 @@ test("protected withdrawal builder returns a deterministic withdraw action paylo
   assert.equal(payload.length, 514);
   assert.equal(buildWithdrawalPayload({
     chainId: ARC_CHAIN_ID,
-    account: Q2FA_ACCOUNT,
-    subject: addressSubject(WALLET_B),
+    account: DEMO_Q2FA_ACCOUNT,
+    subject: addressSubject(DEMO_RECIPIENT_WALLET),
     amount: 1n,
     nonce: 3n,
     deadline: 1_900_000_000n,
   }), payload);
   assert.notEqual(payload, buildWithdrawalPayload({
     chainId: ARC_CHAIN_ID,
-    account: Q2FA_ACCOUNT,
-    subject: addressSubject(WALLET_B),
+    account: DEMO_Q2FA_ACCOUNT,
+    subject: addressSubject(DEMO_RECIPIENT_WALLET),
     amount: 2n,
     nonce: 3n,
     deadline: 1_900_000_000n,
@@ -80,15 +80,15 @@ test("protected withdrawal builder returns a deterministic withdraw action paylo
 
 test("submission gate accepts the owner on Arc with guardian and simulation, rejects wrong wallet or chain", () => {
   const valid = {
-    connectedAddress: WALLET_A,
-    accountOwner: WALLET_A,
+    connectedAddress: DEMO_OWNER_WALLET,
+    accountOwner: DEMO_OWNER_WALLET,
     walletChainId: ARC_CHAIN_ID,
     rpcChainId: ARC_CHAIN_ID,
     guardianMatched: true,
     simulationPassed: true,
   };
   assert.equal(canSubmitProtectedAction(valid), true);
-  assert.equal(canSubmitProtectedAction({ ...valid, connectedAddress: WALLET_B }), false);
+  assert.equal(canSubmitProtectedAction({ ...valid, connectedAddress: DEMO_RECIPIENT_WALLET }), false);
   assert.equal(canSubmitProtectedAction({ ...valid, walletChainId: 1 }), false);
   assert.equal(canSubmitProtectedAction({ ...valid, guardianMatched: false }), false);
   assert.equal(canSubmitProtectedAction({ ...valid, simulationPassed: false }), false);
@@ -143,7 +143,7 @@ test("activity entries render action, amount, recipient, and Arc Explorer link",
     id: txHash,
     action: "Protected withdrawal",
     amount: 1_000_000n,
-    address: WALLET_B,
+    address: DEMO_RECIPIENT_WALLET,
     addressLabel: "Recipient",
     blockNumber: 24_896_900n,
     timestamp: 1_750_000_000n,

@@ -159,6 +159,28 @@ No extra V2 features.
 
 ---
 
+# Phase 3.6 — Multi-user Q2FA Accounts
+
+## Goal
+
+Remove the original demo deployment from normal user state and discover each account through its connected owner wallet.
+
+## Deliverables
+
+- minimal non-upgradeable `Q2FAAccountFactory` with `createAccount(bytes32 guardianKey)`, `accountOf(owner)`, creation block readback, duplicate prevention, and `AccountCreated`;
+- factory-created accounts use `msg.sender` as owner and keep owner discovery in sync after protected owner rotation;
+- client discovery loads only the account returned for the connected wallet;
+- no-wallet and no-account onboarding states, with local guardian export/restore verification required before account creation;
+- deposits, sends, simulations, and activity target the discovered account;
+- original Phase 1–3 account remains a labelled, unregistered demo fixture;
+- local tests and checks before any separately approved Mainnet deployment.
+
+## Mainnet Gate
+
+Do not deploy the factory or create an account until the user reviews and authorizes the estimated Mainnet costs. Until the factory is deployed and configured, the client must not show a demo account as a user's account.
+
+---
+
 # Phase 4 — Stolen-Wallet Demo + Security Polish
 
 ## Goal

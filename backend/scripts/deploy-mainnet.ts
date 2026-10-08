@@ -14,6 +14,7 @@ import {
   parseAbi,
   parseUnits,
   toHex,
+  zeroAddress,
   type Abi,
   type Address,
   type Hex,
@@ -27,7 +28,7 @@ import {
   ARC_USDC,
   PQ_PUBLIC_KEY_BYTES,
   PQ_SIGNATURE_BYTES,
-  WALLET_A,
+  DEMO_OWNER_WALLET,
   addressSubject,
   arcMainnet,
   encodeAuthorizationPayload,
@@ -157,7 +158,7 @@ async function assertMainnetAndSigner(signerAddress: Address): Promise<void> {
   if (chainId !== ARC_CHAIN_ID) {
     throw new SafeFailure(`RPC chain ID is ${chainId}; expected Arc Mainnet ${ARC_CHAIN_ID}.`);
   }
-  if (signerAddress.toLowerCase() !== WALLET_A.toLowerCase()) {
+  if (signerAddress.toLowerCase() !== DEMO_OWNER_WALLET.toLowerCase()) {
     throw new SafeFailure("Configured signer does not resolve to Wallet A; no transaction was broadcast.");
   }
 }
@@ -208,7 +209,7 @@ async function main(): Promise<void> {
     const artifact = JSON.parse(readFileSync(ARTIFACT_PATH, "utf8")) as AccountArtifact;
     const bytecode = typeof artifact.bytecode === "string" ? artifact.bytecode : artifact.bytecode.object;
     if (!bytecode || bytecode === "0x") throw new SafeFailure("Q2FAAccount build artifact is missing bytecode.");
-    const constructorArgs = [WALLET_A, publicKeyHex] as const;
+    const constructorArgs = [DEMO_OWNER_WALLET, publicKeyHex, zeroAddress] as const;
     const deploymentData = encodeDeployData({ abi: artifact.abi, bytecode: bytecode as Hex, args: constructorArgs });
 
     await assertMainnetAndSigner(signer.address);
@@ -266,7 +267,7 @@ async function main(): Promise<void> {
       publicClient.readContract({ address: q2faAddress, abi: q2faAbi, functionName: "nonce" }),
     ]);
     if (!deployedCode || deployedCode === "0x") throw new SafeFailure("Deployed Q2FA address has no runtime code.");
-    if (deployedOwner.toLowerCase() !== WALLET_A.toLowerCase()) throw new SafeFailure("Deployed owner does not match Wallet A.");
+    if (deployedOwner.toLowerCase() !== DEMO_OWNER_WALLET.toLowerCase()) throw new SafeFailure("Deployed owner does not match the demo owner wallet.");
     if (deployedGuardian.toLowerCase() !== publicKeyHex.toLowerCase()) throw new SafeFailure("Deployed guardian does not match the generated development key.");
     if (deployedNonce !== 0n) throw new SafeFailure("New Q2FA account nonce is not zero.");
     console.log(`Deployed state verified: owner ${deployedOwner}, guardian ${deployedGuardian}, nonce ${deployedNonce}`);
@@ -337,7 +338,7 @@ async function main(): Promise<void> {
       chainId: ARC_CHAIN_ID,
       account: q2faAddress,
       action: AuthorizationAction.Withdraw,
-      subject: addressSubject(WALLET_A),
+      subject: addressSubject(DEMO_OWNER_WALLET),
       amount: PROBE_AMOUNT,
       nonce: currentNonce,
       deadline,
@@ -351,7 +352,7 @@ async function main(): Promise<void> {
     const withdrawalData = encodeFunctionData({
       abi: q2faAbi,
       functionName: "withdraw",
-      args: [WALLET_A, PROBE_AMOUNT, deadline, signatureHex],
+      args: [DEMO_OWNER_WALLET, PROBE_AMOUNT, deadline, signatureHex],
     });
     await assertMainnetAndSigner(signer.address);
     const withdrawalSimulation = await publicClient.simulateContract({
@@ -359,7 +360,7 @@ async function main(): Promise<void> {
       address: q2faAddress,
       abi: q2faAbi,
       functionName: "withdraw",
-      args: [WALLET_A, PROBE_AMOUNT, deadline, signatureHex],
+      args: [DEMO_OWNER_WALLET, PROBE_AMOUNT, deadline, signatureHex],
     });
     void withdrawalSimulation;
     const withdrawalFees = await getFeeSnapshot();
@@ -368,7 +369,7 @@ async function main(): Promise<void> {
       address: q2faAddress,
       abi: q2faAbi,
       functionName: "withdraw",
-      args: [WALLET_A, PROBE_AMOUNT, deadline, signatureHex],
+      args: [DEMO_OWNER_WALLET, PROBE_AMOUNT, deadline, signatureHex],
       maxFeePerGas: withdrawalFees.maxFeePerGas,
       maxPriorityFeePerGas: 0n,
     });
@@ -376,7 +377,7 @@ async function main(): Promise<void> {
     const withdrawalFeeMaximum = feeFor(withdrawalGas, withdrawalFees.maxFeePerGas);
     assertProjectedSpend(actualFees, withdrawalFeeMaximum, "PQ-protected withdrawal");
     await assertBalanceForFee(signer.address, withdrawalFeeMaximum, "PQ-protected withdrawal");
-    console.log(`Withdrawal target: ${q2faAddress}; recipient: Wallet A ${WALLET_A}`);
+    console.log(`Withdrawal target: ${q2faAddress}; recipient: demo owner ${DEMO_OWNER_WALLET}`);
     console.log(`Withdrawal calldata bytes: ${((withdrawalData.length - 2) / 2).toString()}`);
     console.log(`Withdrawal amount: ${PROBE_AMOUNT.toString()} ERC-20 base unit (0.000001 USDC); transaction value 0`);
     console.log(`Withdrawal gas estimate: ${withdrawalGas.toString()}`);
@@ -391,7 +392,7 @@ async function main(): Promise<void> {
       address: q2faAddress,
       abi: q2faAbi,
       functionName: "withdraw",
-      args: [WALLET_A, PROBE_AMOUNT, deadline, signatureHex],
+      args: [DEMO_OWNER_WALLET, PROBE_AMOUNT, deadline, signatureHex],
       gas: withdrawalGas,
       maxFeePerGas: withdrawalFees.maxFeePerGas,
       maxPriorityFeePerGas: 0n,
@@ -406,7 +407,7 @@ async function main(): Promise<void> {
       publicClient.readContract({ address: ARC_USDC, abi: usdcAbi, functionName: "balanceOf", args: [q2faAddress] }),
       publicClient.readContract({ address: q2faAddress, abi: q2faAbi, functionName: "owner" }),
     ]);
-    if (finalNonce !== currentNonce + 1n || finalAccountBalance !== 0n || finalOwner.toLowerCase() !== WALLET_A.toLowerCase()) {
+    if (finalNonce !== currentNonce + 1n || finalAccountBalance !== 0n || finalOwner.toLowerCase() !== DEMO_OWNER_WALLET.toLowerCase()) {
       throw new SafeFailure("Post-withdrawal state verification did not match the expected nonce, balance, and owner.");
     }
     console.log(`Post-withdrawal state verified: owner ${finalOwner}, nonce ${finalNonce}, account ERC-20 balance ${finalAccountBalance}`);

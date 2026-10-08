@@ -5,7 +5,7 @@ import { hexToBytes } from "viem";
 import { slh_dsa_sha2_128s } from "@noble/post-quantum/slh-dsa.js";
 import {
   AuthorizationAction,
-  WALLET_A,
+  DEMO_OWNER_WALLET,
   addressSubject,
   encodeAuthorizationPayload,
 } from "@q2fa/shared";
@@ -17,7 +17,7 @@ test("Q2FA authorization is fixed-width ABI data and a local SLH-DSA key signs i
   const keys = slh_dsa_sha2_128s.keygen(seed);
   const payload = encodeAuthorizationPayload({
     chainId: 5042,
-    account: WALLET_A,
+    account: DEMO_OWNER_WALLET,
     action: AuthorizationAction.Withdraw,
     subject: addressSubject(TEST_RECIPIENT),
     amount: 1n,
@@ -50,7 +50,7 @@ test("Q2FA authorization is fixed-width ABI data and a local SLH-DSA key signs i
 test("chain, account, action, subject, amount, nonce, and deadline each change the signed payload", () => {
   const baseline = {
     chainId: 5042,
-    account: WALLET_A,
+    account: DEMO_OWNER_WALLET,
     action: AuthorizationAction.Withdraw,
     subject: addressSubject(TEST_RECIPIENT),
     amount: 1n,
