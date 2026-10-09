@@ -346,8 +346,8 @@ export default function App() {
   }, [wallet?.address, discoveryRefresh]);
 
   useEffect(() => {
-    if (route === "/activity" && activity.length === 0 && !activityLoading && !activityError) void loadActivity();
-  }, [route, activity.length, activityError, activityLoading, loadActivity]);
+    if (route === "/activity" && account) void loadActivity();
+  }, [route, account?.address, account?.accountCreatedBlock, loadActivity]);
 
   useEffect(() => () => {
     wipeGuardian(guardian.current);
