@@ -1238,10 +1238,23 @@ async function getActivityLogsInChunks(
           await delay(ACTIVITY_QUERY_DELAY_MS);
           continue;
         }
-        if (isRateLimitError(cause) && retries < 3) {
-          retries += 1;
-          await delay(ACTIVITY_QUERY_DELAY_MS * retries * 2);
-          continue;
+        if (isRateLimitError(cause)) {
+          const requestedRange = end - start + 1n;
+          if (requestedRange > 1n) {
+            // Arc can rate-limit broad USDC Transfer filters even when the
+            // block range is below its maximum. Retry the same address/topic
+            // filter over smaller ranges instead of repeating a doomed query.
+            pageSize = requestedRange / 2n;
+            end = start + pageSize - 1n;
+            retries = 0;
+            await delay(ACTIVITY_QUERY_DELAY_MS);
+            continue;
+          }
+          if (retries < 3) {
+            retries += 1;
+            await delay(ACTIVITY_QUERY_DELAY_MS * retries * 2);
+            continue;
+          }
         }
         throw cause;
       }

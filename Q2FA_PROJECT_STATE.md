@@ -10,7 +10,7 @@
 
 **Phase 3.5 — Layout + Visual Redesign: PASS.** Nested routing, the fixed application shell, separate Deposit and Docs pages, and the graphite/cyan visual system are complete. Phase 4 has not started.
 
-**Phase 3.6 — Multi-user Q2FA Accounts: local implementation complete; Mainnet factory deployment pending separate review and authorization.** The product no longer treats the original demo account as a default user account. Factory-based discovery and onboarding are implemented locally, but live multi-user account creation is not enabled because the factory has not been deployed.
+**Phase 3.6 — Multi-user Q2FA Accounts: PASS.** The Arc Mainnet factory is deployed and configured, and the first user-owned Q2FA account has been created and verified. The original demo account remains historical evidence, not a product default. Phase 4 has not started.
 
 ## Phase 3 Dashboard — Complete
 
@@ -156,7 +156,7 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 - Phase 3.6 implementation validation itself sent no transaction. The recorded `0.052601040789478092 USDC` cumulative subtotal predates the later authorized factory deployment and excludes that deployment fee. This RPC verification added `0 USDC` in network fees.
 - The deployment plan was later executed through a separately authorized transaction. The factory is at `0x378330579a0c76215994e774b95a3413c2efba34` and is configured locally through the ignored Vite environment file. Each user creation remains a separate owner-submitted transaction after local guardian backup verification.
 - Migration impact: the existing direct-deployed demo account remains valid and untouched, but is not in the new factory registry. It will remain a labelled demo unless a separate explicit migration design is approved.
-- Remaining live risks: live per-user account creation has not been exercised; the existing demo deployment cannot be discovered through the new factory. No Phase 4 work has started.
+- At the time of the initial Phase 3.6 review, per-user creation had not been exercised. The first live user account is now recorded below. The legacy demo account remains outside the factory registry by design and cannot be discovered as a user's account through the factory.
 
 ### Production RPC strategy verification — 2026-10-09
 
@@ -166,4 +166,15 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 - The Vite proxy remains dev-only because direct Arc reads had failed during this workspace's local review. It is not part of the production bundle. The production direct path passed browser verification, so no backend proxy or alternate RPC endpoint is needed.
 - No transaction was sent for this verification.
 
-**Phase 3.6 local implementation and factory deployment are complete; per-user account creation has not been exercised. Phase 4 has not started.**
+## Phase 3.6 Multi-user Account Finalization — PASS
+
+- The deployed Arc Mainnet factory is `0x378330579a0c76215994e774b95a3413c2efba34` (chain ID `5042`). The frontend onboarding successfully created the first user-owned account.
+- New user wallet / account owner: `0xbAbDFEF588cF57eFcc7c8857960E3CCdD9167589`.
+- Factory lookup `accountOf(newUserWallet)` returned `0xEBA06bB7be5301F4aa12285c26Df2d519ecA88c9`. Read-only state confirmed `owner()` equals the new user wallet, `guardianKey()` equals the onboarding guardian public key `0x559980f7985c38dc59afa1968d9dcf45afce9c6d3c50c369ddda29e4c0a2d2ac`, `nonce()` is `0`, protected USDC balance is `0`, and `accountCreatedBlock()` is `25064021`.
+- Account creation transaction: `0x8f9329acb707532cf39aa189a3baa8299374e2761ab53f76b32e29fe0de6cb5d`; status `success`; block `25064021`; gas used `701858`; effective gas price `20000001003 wei`; exact network fee `0.014037160703963574 USDC`. The receipt's factory `AccountCreated` event matches the wallet, account, and guardian above. No guardian seed or private material is recorded here.
+- Guardian onboarding displayed `Active guardian matched` for the new account. The seed remains user-managed and was not read, copied, logged, or persisted by this verification.
+- Wallet isolation was verified read-only: the new wallet maps to its own account; `accountOf(Wallet A)` and `accountOf(Wallet B)` each return the zero address; neither resolves to the new user's account. The legacy demo account `0xa40524d1e9380d3b82752ec4bc074cc7e6272fb0` remains unchanged: owner Wallet A, original guardian public key `0xe2234e490c1a42c30104d059aad16473811694a715a33f31d8c8a0a9dabe4566`, nonce `1`, and zero protected balance.
+- The connected dashboard automatically loaded the new user's live account. Overview showed the new owner, guardian, nonce, and balance; Deposit showed the new account as the protected destination; Send showed the active account and owner/guardian readiness; Security Demo was scoped to the active account. Activity displayed its scan start at the new account's creation block and used account-specific event filters. It had no foreign-account data.
+- Activity scan note: during this browser review, Arc RPC returned `-32005 rate limit exceeded` for a 956-block USDC `Transfer` query, while the corresponding filtered query over a 500-block range succeeded with zero logs. The Vite server on port 5173 continued serving its pre-change App module, and a fresh Activity page remained in the loading state. The source now halves the queried range on this RPC error and preserves the address/topic filters; the updated Activity behavior is covered by the production build but was not confirmed in the stale browser server. No transaction was submitted.
+- `npm run check` passed (all workspace typechecks, builds, and frontend/backend/Solidity tests); `git diff --check` passed. The temporary Windows Node user-info shim used for Hardhat was removed after the run. No secret files or credentials were tracked. No database or custody service was introduced.
+- Next phase recommendation: **Phase 4 — security attack testing and demo polish**. Phase 4 has not started.
