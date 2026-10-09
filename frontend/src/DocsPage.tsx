@@ -4,51 +4,59 @@ import { DEMO_OWNER_WALLET, DEMO_Q2FA_ACCOUNT } from "@q2fa/shared";
 const sections = [
   {
     title: "What is Q2FA?",
-    body: "Q2FA is an Arc smart account that requires two independent approvals before protected USDC can move: the normal EVM owner wallet and a post-quantum guardian.",
+    body: "Q2FA is a post-quantum two-factor smart account on Arc Mainnet. The normal EVM owner wallet is Factor 1; an independent SLH-DSA-SHA2-128s guardian is Factor 2. Both must authorize a protected action before USDC held by the account can move.",
   },
   {
     title: "How the two factors work",
-    body: "The guardian signs a precise action that includes the network, account, recipient, amount, nonce, and expiry. The EVM owner then submits that same action to the account. Either factor on its own is insufficient.",
+    body: "The guardian signs a deterministic payload that binds the chain, Q2FA account, action, recipient or subject, amount where applicable, nonce, and expiry. The current EVM owner submits that same action. The account checks both factors and consumes the nonce on success. Changing a bound value invalidates the signature.",
   },
   {
     title: "Factor 1 — EVM wallet",
-    body: "The owner wallet submits protected actions and pays Arc Mainnet network fees in USDC. Q2FA checks that the connected transaction sender is the account’s current owner.",
+    body: "The account’s current owner uses a normal EVM wallet to submit a protected transaction and pay Arc network fees in USDC. The wallet remains Factor 1; possession of this key alone does not satisfy the account’s authorization rules.",
   },
   {
     title: "Factor 2 — PQ guardian",
-    body: "The guardian uses SLH-DSA-SHA2-128s. Its seed is imported and used locally in this browser session. Q2FA checks the signature with Arc’s built-in verifier.",
+    body: "A local SLH-DSA-SHA2-128s guardian signs the exact protected action. The account verifies the signature onchain through Arc’s built-in verifier. Only the public guardian key is account state; the seed is imported and used locally in the active browser session.",
   },
   {
     title: "Why Arc",
-    body: "Arc Mainnet provides the EVM execution environment and a native post-quantum signature verifier used by the Q2FA account.",
+    body: "Q2FA isn’t just deployed on Arc. Its second factor works because Arc can verify the guardian’s SLH-DSA signature directly onchain. The account calls Arc’s built-in verifier as part of authorization, so the PQ approval is a contract check rather than an offchain service or frontend convention. Without Arc’s native verifier, this exact design would need a substantially heavier custom verifier, an external verification system, or a different architecture. Arc is the infrastructure that makes this post-quantum second factor practical onchain. The verifier is experimental/emerging infrastructure.",
   },
   {
     title: "Protected withdrawal flow",
-    body: "Review the recipient, amount, account, nonce, and expiry; sign that exact payload with the active guardian; then submit it with the owner wallet. The account validates both approvals before transferring USDC.",
+    body: "Enter a recipient and amount. The client reads the account’s current nonce and expiry, displays the exact action, and asks the local guardian to sign it. The owner wallet then submits the action. The Q2FA account verifies the owner, deadline, nonce, and PQ signature before transferring USDC. The client can simulate the transaction read-only on Arc Mainnet and estimate the USDC network fee first.",
   },
   {
     title: "Threat model",
-    body: "The design aims to prevent an attacker with only the owner EVM key from withdrawing funds held inside this Q2FA account. It does not claim that either key, the browser, or the signing device is immune to compromise.",
+    body: "Q2FA is designed so that an attacker with only the owner EVM key cannot complete a protected withdrawal from the smart account. The model still depends on the guardian remaining independent, the browser and signing device being trustworthy, and the contract and Arc verifier behaving as expected. Q2FA does not claim either key or the system is immune to compromise.",
   },
   {
     title: "What Q2FA protects",
-    body: "USDC held by the deployed Q2FA smart account is subject to its two-factor protected actions. Deposits are ordinary USDC transfers into the account.",
+    body: "USDC deposited into a Q2FA smart account is subject to its two-factor protected actions. Deposits are ordinary transfers into the account and do not need PQ approval; the authorization rule applies to actions that move protected funds out.",
   },
   {
     title: "What Q2FA does not protect",
-    body: "Funds left in the owner’s regular EVM wallet are outside the Q2FA account and receive no Q2FA protection. The current V1 does not provide social recovery, a cloud backup, or an emergency owner bypass.",
+    body: "Funds left directly in the owner’s normal EVM wallet are outside the Q2FA account. V1 has no guardian recovery, social recovery, owner recovery, or cloud backup. Losing the guardian backup can make protected actions unavailable. Any future recovery path must not bypass the two-factor rule.",
   },
   {
     title: "Guardian backup and restore",
-    body: "Keep a guardian seed backup offline in a location you control. Import it only into a trusted local client. The app derives the public key locally and checks it against the onchain guardian; the secret stays in memory and is cleared when the session ends.",
+    body: "Generate the guardian locally, download a seed backup to a location you control, and re-import it to verify that it derives the same public key before account creation. The seed is not sent to the backend or stored onchain. After restore, the secret remains in browser memory only and is not written to browser storage. Keep the backup offline. Q2FA does not provide cloud recovery.",
+  },
+  {
+    title: "Current limitations",
+    body: "Arc’s PQ verifier is experimental/emerging infrastructure, and Q2FA’s contracts have not received an external security audit. SLH-DSA signatures are large and can cost more gas and calldata than ordinary EVM signatures. Only deposited smart-account funds are protected. Losing the guardian backup can block protected actions because recovery is not included in V1.",
   },
   {
     title: "Protocol / app deployment",
-    body: "Q2FA accounts are created by the Arc Mainnet account factory. Each account is indexed by its current EVM owner; the app discovers only the account registered to the connected wallet and reads its state directly from Arc.",
+    body: "The current multi-user deployment is the Arc Mainnet factory at 0x378330579a0c76215994e774b95a3413c2efba34. For a connected wallet, the app reads accountOf(wallet): it loads that wallet’s account when one exists or offers onboarding when none exists. Account creation uses the connected wallet as msg.sender and rejects a duplicate account for that owner. The legacy demo account is not a fallback for other wallets. The frontend reads account state directly from Arc; the backend health service is optional and does not authorize actions.",
   },
   {
     title: "Example verified Q2FA account",
-    body: `This legacy demo account is ${DEMO_Q2FA_ACCOUNT}, created for the verified Phase 1–3 Mainnet proof. Its original owner was ${DEMO_OWNER_WALLET}. It is a demo fixture, not a global product account or a fallback for other wallets.`,
+    body: `The first factory-created example belongs to 0xbAbDFEF588cF57eFcc7c8857960E3CCdD9167589 and is 0xEBA06bB7be5301F4aa12285c26Df2d519ecA88c9. It was created at block 25064021 in transaction 0x8f9329acb707532cf39aa189a3baa8299374e2761ab53f76b32e29fe0de6cb5d. This is one account’s verification evidence, not a global product account. The separate historical Phase 1–3 demo account is ${DEMO_Q2FA_ACCOUNT}, originally owned by ${DEMO_OWNER_WALLET}; it remains a demo fixture and is never loaded as another wallet’s account.`,
+  },
+  {
+    title: "Security verification",
+    body: "The live Security Demo runs read-only Arc Mainnet eth_call simulations. An owner call with no PQ signature is blocked; a valid guardian signature submitted by a non-owner is blocked; the live owner plus active guardian can authorize a withdrawal simulation. The demo displays decoded contract outcomes, not hardcoded success or failure states. Mainnet read-only simulations also exercised recipient, amount, action, expiry, stale nonce, and corrupted-signature failures. Changed account/domain and cross-user cases are covered by local regression tests and independent account-discovery checks. No failed transaction is broadcast.",
   },
 ] as const;
 
@@ -57,16 +65,16 @@ export function DocsPage() {
     <section className="docs-page" aria-labelledby="docs-title">
       <div className="page-intro">
         <p className="eyebrow">Q2FA field guide</p>
-        <h2 id="docs-title">Two keys. One protected action.</h2>
-        <p>A short guide to what the account checks, what it protects, and where its limits are.</p>
+        <h2 id="docs-title">What if someone steals your wallet key?</h2>
+        <p>In a normal EVM wallet, that key may be enough to move your funds. Q2FA makes the wallet only Factor 1. Protected actions also require an independent post-quantum guardian.</p>
       </div>
 
-      <div className="docs-flow" aria-label="Both independent factors are required for a protected action">
-        <div className="docs-factor"><span className="docs-factor-index">01</span><strong>EVM owner wallet</strong><small>Submits and pays the network fee</small></div>
+      <div className="docs-flow" aria-label="EVM wallet plus PQ guardian equals protected action">
+        <div className="docs-factor"><span className="docs-factor-index">01</span><strong>EVM Wallet</strong><small>Submits the owner transaction</small></div>
         <span className="docs-plus" aria-hidden="true">+</span>
-        <div className="docs-factor"><span className="docs-factor-index">02</span><strong>PQ guardian</strong><small>Signs the exact authorization</small></div>
+        <div className="docs-factor"><span className="docs-factor-index">02</span><strong>PQ Guardian</strong><small>Signs the exact action</small></div>
         <span className="docs-equals" aria-hidden="true">=</span>
-        <div className="docs-result"><span>2 / 2 required</span><strong>Protected action</strong></div>
+        <div className="docs-result"><span>2 / 2 required</span><strong>Protected Action</strong></div>
       </div>
 
       <div className="docs-grid">
