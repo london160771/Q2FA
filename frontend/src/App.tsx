@@ -57,7 +57,10 @@ import { AppRouter } from "./AppRouter.js";
 import { DocsPage } from "./DocsPage.js";
 import type { ReactNode } from "react";
 
-const publicClient = createPublicClient({ chain: arcMainnet, transport: http(ARC_RPC_URL) });
+const publicClient = createPublicClient({
+  chain: arcMainnet,
+  transport: http(import.meta.env?.DEV ? "/arc-rpc" : ARC_RPC_URL),
+});
 const explorerTx = "https://explorer.arc.io/tx/";
 const ACTIVITY_QUERY_CHUNK_BLOCKS = 10_000n;
 const ACTIVITY_QUERY_DELAY_MS = 750;
