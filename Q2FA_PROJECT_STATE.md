@@ -8,9 +8,23 @@
 
 **Phase 3 — Dashboard: PASS.** Activity reads real Arc Mainnet logs through bounded, topic-filtered direct RPC pages. Both live Security Demo simulations were verified against the deployed account using read-only `eth_call`; the EVM-only attempt was blocked and the active guardian authorization was accepted. No Mainnet transaction was sent during Phase 3 verification.
 
-**Phase 3.5 — Layout + Visual Redesign: PASS.** Nested routing, the fixed application shell, separate Deposit and Docs pages, and the graphite/cyan visual system are complete. Phase 4 has not started.
+**Phase 3.5 — Layout + Visual Redesign: PASS.** Nested routing, the fixed application shell, separate Deposit and Docs pages, and the graphite/cyan visual system are complete.
 
-**Phase 3.6 — Multi-user Q2FA Accounts: PASS.** The Arc Mainnet factory is deployed and configured, and the first user-owned Q2FA account has been created and verified. The original demo account remains historical evidence, not a product default. Phase 4 has not started.
+**Phase 3.6 — Multi-user Q2FA Accounts: PASS.** The Arc Mainnet factory is deployed and configured, and the first user-owned Q2FA account has been created and verified. The original demo account remains historical evidence, not a product default.
+
+**Phase 4 — Security Attack Testing + Demo Polish: PASS.** The live stolen-wallet and guardian-only cases were blocked by the deployed account, and the owner plus active PQ guardian authorized a withdrawal-specific Arc Mainnet `eth_call`. No withdrawal transaction was broadcast.
+
+## Phase 4 — Security Attack Testing + Demo Polish — PASS
+
+- Three live Arc Mainnet read-only attack cases were verified: (1) EVM owner without a PQ signature was blocked with `InvalidPQSignatureLength(0)`; (2) a valid current guardian signature from a non-owner caller was blocked with `NotOwner`; and (3) the live owner caller plus a locally verified signature from the active guardian passed the withdrawal-specific simulation. The Security Demo displayed human-readable results; no raw RPC error dump was shown.
+- A single authorized deposit funded the new account with exactly `1` USDC base unit (`0.000001 USDC`). Transaction: `0xdca09dd487fe2fc21246956403ad39ee7d8368edce0687ddc562971e5c25e3d5`; block `25080783`; status `success`; gas used `48,926`; effective gas price `20,000,011,153 wei`; actual fee `0.000978520056411678 USDC`. The transaction calldata was verified as USDC `transfer(account, 1)`. Protected balance changed from `0` to `0.000001 USDC`.
+- Immediately before and after the withdrawal simulation, Arc Mainnet reads confirmed chain ID `5042`, account `0xEBA06bB7be5301F4aa12285c26Df2d519ecA88c9`, owner `0xbAbDFEF588cF57eFcc7c8857960E3CCdD9167589`, and guardian key `0x559980f7985c38dc59afa1968d9dcf45afce9c6d3c50c369ddda29e4c0a2d2ac`. The account nonce remained `0`; USDC balance remained `1` base unit (`0.000001 USDC`).
+- The successful two-factor test was specifically `WITHDRAW` (action `0`), not `CHANGE_GUARDIAN`: recipient Wallet B `0x815C2fb8178F0bf80aDa8C5B97fF44Ece90e6e25`, amount `1` base unit, current nonce `0`, 15-minute deadline, Arc chain/account domain, current guardian signature, and the live owner as simulated caller. The client reported “Exact action simulated successfully on Arc Mainnet” and enabled “Submit with wallet”; submission was not clicked. This was a read-only `eth_call`, not an EVM transaction signature.
+- No withdrawal transaction hash was created and no withdrawal transaction was sent. The account has zero `Withdrawal` event logs from the deposit block through block `25081302`. The only Phase 4 paid transaction was the deposit above; the withdrawal simulation incurred no network fee. The UI displayed an estimated withdrawal fee of `~0.012958488541556811 USDC`; this was not paid.
+- Local security tests pass for recipient, amount, action, account, and chain tampering; stale/reused nonce; expired authorization; missing/invalid/corrupted PQ signature; and the owner/guardian authorization paths. Negative Mainnet checks used read-only simulation only. Solidity tests use a mock verifier for cryptographic contract calls; a separate local Noble SLH-DSA test verifies the real key/signature round trip.
+- Security review found no unresolved Critical or High issue in authorization binding, owner checks, guardian verification, nonce/deadline behavior, or withdrawal state handling. Known limitations remain: Arc documents its PQ verifier as experimental, the local Solidity verifier is mocked in tests, and users must manage their own guardian backup. No guardian seed/private material was inspected, logged, persisted, or recorded.
+- `npm run check` passed: all workspace typechecks and builds; 27 frontend tests, 2 backend tests, and 40 Solidity tests. `git diff --check` passed. Hardhat on this Windows host needs a temporary CommonJS `os.userInfo()` compatibility preload outside the repository; the plain run failed with `uv_os_get_passwd returned ENOMEM`, while the shim-assisted full check passed. The shim was removed afterward. Vite retains a non-blocking bundle warning (618.60 KB minified; 188.51 KB gzip).
+- Phase 5 recommendation: Phase 4 is complete; begin Phase 5 only after separate review/instruction.
 
 ## Phase 3 Dashboard — Complete
 
@@ -41,7 +55,7 @@ Phase 3 verification is complete. No unresolved critical or high security issue 
 - Manually reviewed the production preview at 1440×900, 768×900, and 375×812. Sidebar and header remain fixed while the outlet scrolls; the mobile drawer opens, focuses the first navigation link, changes route, and closes. At 375px, the document width remained 375px with no horizontal or body-level vertical overflow; the route outlet scrolls independently.
 - No contract, guardian, authorization, deployment, or Mainnet transaction behavior was changed. No database or secret persistence was introduced. The existing `/activity` page still reads real Arc data and the Phase 3 Mainnet events verified above remain the source; no history is hardcoded.
 
-No critical/high issue was introduced. The Vite build still reports a non-blocking main JavaScript chunk size warning (about 597 KB minified, 184 KB gzip); PQ guardian code remains separately lazy-loaded. Phase 4 has not started.
+No critical/high issue was introduced. The Vite build still reports a non-blocking main JavaScript chunk size warning (about 597 KB minified, 184 KB gzip); PQ guardian code remains separately lazy-loaded. Phase 4 status is summarized above.
 
 ## Phase 2 Clean Redeploy — Complete
 
@@ -179,4 +193,4 @@ The probe deposited and withdrew `1` ERC-20 base unit (`0.000001 USDC`) and left
 - The legacy demo history was scanned read-only from its deployment block `24896834` through Arc head `25069165`, using 10,000-block pages (final page 2,332 blocks). The scan returned the `0.000001 USDC` deposit at block `24906205` (`0x250b846795c302a8dd67c5b46063379d6527a85196e91771d5ac1d36c2e95c26`) and protected withdrawal to Wallet B at block `24906981` (`0xb883911a18724ef6a31ed6f9ca3f54a13847ca5413b2efcd69fa18eb76e2e56a`). Arc accepted all pages without range/rate-limit errors; no reduction was triggered. No transaction was submitted.
 - The requested Vite restart stopped the stale server. Vite's dev dependency optimizer then exited with an access-denied error while traversing a parent directory, so a fresh production build was served on port 5173 for the Activity check. The original guardian tab was not reloaded or altered; no guardian seed/private material was read, logged, or changed.
 - `npm run check` passed (all workspace typechecks, builds, and frontend/backend/Solidity tests); `git diff --check` passed. The temporary Windows Node user-info shim used for Hardhat was removed after the run. No secret files or credentials were tracked. No database or custody service was introduced.
-- Next phase recommendation: **Phase 4 — security attack testing and demo polish**. Phase 4 has not started.
+- Next phase recommendation at Phase 3.6 completion was **Phase 4 — security attack testing and demo polish**; see the Phase 4 result above.

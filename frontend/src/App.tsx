@@ -37,6 +37,7 @@ import {
   formatUsdc,
   guardianMatchesOnchain,
   sortActivityNewestFirst,
+  verifyGuardianOnlyBlocked,
   verifyWalletOnlyBlocked,
   validateSendRequest,
   type ActivityEntry,
@@ -160,6 +161,8 @@ export default function App() {
   const [activityDiagnostic, setActivityDiagnostic] = useState<string>();
   const [walletOnlyDemoState, setWalletOnlyDemoState] = useState<DemoCheckState>("idle");
   const [walletOnlyDemoMessage, setWalletOnlyDemoMessage] = useState("");
+  const [guardianOnlyDemoState, setGuardianOnlyDemoState] = useState<DemoCheckState>("idle");
+  const [guardianOnlyDemoMessage, setGuardianOnlyDemoMessage] = useState("");
   const [twoFactorDemoState, setTwoFactorDemoState] = useState<DemoCheckState>("idle");
   const [twoFactorDemoMessage, setTwoFactorDemoMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -301,6 +304,7 @@ export default function App() {
     setActivityError(undefined);
     setActivityDiagnostic(undefined);
     setWalletOnlyDemoState("idle");
+    setGuardianOnlyDemoState("idle");
     setTwoFactorDemoState("idle");
     clearPrepared();
     wipeGuardian(guardian.current);
@@ -421,11 +425,14 @@ export default function App() {
     wipeGuardian(prior);
     guardian.current = null;
     setGuardianReady(false);
+    let seedText = "";
     try {
       if (file.size > 512) throw new Error("The guardian backup file is unexpectedly large.");
-      const [freshAccount, seedText] = await Promise.all([refreshAccount(), file.text()]);
+      const freshAccount = await refreshAccount();
+      seedText = await file.text();
       const { importGuardianSeed } = await import("./guardian.js");
       const imported = importGuardianSeed(seedText.trim());
+      seedText = "";
       if (!guardianMatchesOnchain(imported.publicKey, freshAccount.guardianKey)) {
         wipeGuardian(imported);
         setGuardianMessage("Guardian mismatch — this seed does not match the active onchain guardian.");
@@ -439,6 +446,7 @@ export default function App() {
       setGuardianMessage("Guardian required");
       setError(userError(cause));
     } finally {
+      seedText = "";
       if (fileInput.current) fileInput.current.value = "";
       setBusy(false);
     }
@@ -449,6 +457,10 @@ export default function App() {
     guardian.current = null;
     setGuardianReady(false);
     setGuardianMessage("Guardian required");
+    setGuardianOnlyDemoState("idle");
+    setGuardianOnlyDemoMessage("");
+    setTwoFactorDemoState("idle");
+    setTwoFactorDemoMessage("");
     clearPrepared();
     setNotice("Guardian removed from this tab’s memory.");
   }
@@ -879,10 +891,71 @@ export default function App() {
         throw new Error("Account state changed unexpectedly during eth_call simulation.");
       }
       setTwoFactorDemoState("passed");
-      setTwoFactorDemoMessage("AUTHORIZED: the account owner submitted the simulated call and the active guardian signed the exact onchain payload. Arc Mainnet eth_call changed no account state.");
+      setTwoFactorDemoMessage("AUTHORIZED: Arc Mainnet accepted an eth_call from the live owner address with the active guardian’s locally verified signature over the exact payload. The call changed no account state and is not an EVM transaction signature.");
     } catch (cause) {
       setTwoFactorDemoState("failed");
       setTwoFactorDemoMessage(userError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runGuardianOnlySimulation() {
+    setError(undefined);
+    setGuardianOnlyDemoState("running");
+    setGuardianOnlyDemoMessage("");
+    if (!account || !guardian.current || !guardianReady || !guardianMatchesOnchain(guardian.current.publicKey, account.guardianKey)) {
+      setGuardianOnlyDemoState("failed");
+      setGuardianOnlyDemoMessage("Restore the active guardian and confirm its onchain match first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fresh = await refreshAccount();
+      const activeGuardian = guardian.current;
+      if (!activeGuardian || !guardianMatchesOnchain(activeGuardian.publicKey, fresh.guardianKey)) {
+        throw new Error("The restored guardian no longer matches the live account.");
+      }
+      const block = await publicClient.getBlock({ blockTag: "latest" });
+      const deadline = block.timestamp + 300n;
+      const guardianKey = activeGuardian.publicKey;
+      const payload = encodeAuthorizationPayload({
+        chainId: ARC_CHAIN_ID,
+        account: buildAccountTargets(fresh.address).withdrawal,
+        action: AuthorizationAction.ChangeGuardian,
+        subject: guardianKey,
+        amount: 0n,
+        nonce: fresh.nonce,
+        deadline,
+      });
+      await assertContractPayload(fresh.address, AuthorizationAction.ChangeGuardian, guardianKey, 0n, deadline, payload);
+      const { signMessage, verifyMessage } = await import("./guardian.js");
+      const signatureBytes = signMessage(activeGuardian.secretKey, payload);
+      try {
+        if (!verifyMessage(activeGuardian.publicKey, payload, signatureBytes)) throw new Error("Local guardian signature verification failed.");
+        const simulatedSender = getSimulatedNonOwner(fresh.owner);
+        const outcome = await verifyGuardianOnlyBlocked(
+          () => publicClient.simulateContract({
+            address: fresh.address,
+            abi: q2faAccountAbi,
+            functionName: "changeGuardian",
+            args: [guardianKey, deadline, toHex(signatureBytes)],
+            account: simulatedSender,
+          }),
+          (cause) => extractContractErrorName(cause, q2faAccountAbi),
+        );
+        const after = await refreshAccount();
+        if (after.nonce !== fresh.nonce || after.guardianKey.toLowerCase() !== fresh.guardianKey.toLowerCase()) {
+          throw new Error("Account state changed unexpectedly during eth_call simulation.");
+        }
+        setGuardianOnlyDemoState("passed");
+        setGuardianOnlyDemoMessage(`BLOCKED: a valid guardian authorization from a non-owner address was rejected with ${outcome.revertName}. Arc Mainnet eth_call changed no account state.`);
+      } finally {
+        signatureBytes.fill(0);
+      }
+    } catch (cause) {
+      setGuardianOnlyDemoState("failed");
+      setGuardianOnlyDemoMessage(userError(cause));
     } finally {
       setBusy(false);
     }
@@ -1045,28 +1118,37 @@ export default function App() {
 
   const securityPage: ReactNode = account ? (
     <section className="page-section demo-page" aria-labelledby="demo-title">
-      <div className="page-intro"><p className="eyebrow">Read-only contract simulation</p><h2 id="demo-title">Security demo</h2><p>See what happens when an EVM wallet is available without a valid post-quantum approval.</p></div>
+      <div className="page-intro"><p className="eyebrow">Live Arc Mainnet · read-only</p><h2 id="demo-title">Someone stole your wallet.</h2><p>These simulations use your active Q2FA account. No transaction is sent and no account state changes.</p></div>
       <div className="demo-equation"><span>Factor 1 · EVM wallet</span><b aria-hidden="true">+</b><span>Factor 2 · PQ guardian</span><b aria-hidden="true">=</b><strong>Protected action</strong></div>
       <div className="demo-grid">
         <article className="attack-card" aria-labelledby="attack-title">
-          <div className="demo-card-top"><span className="demo-icon attack-icon" aria-hidden="true">!</span><span className="demo-label">Attack scenario</span></div>
-          <h3 id="attack-title">Stolen EVM wallet</h3>
-          <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner address is the simulated sender</li><li><span className="check-bad">×</span> PQ guardian authorization is missing</li></ul>
-          <div className={"demo-result" + (walletOnlyDemoState === "passed" ? " is-blocked" : walletOnlyDemoState === "failed" ? " is-error" : "")}><span className="result-word">{walletOnlyDemoState === "running" ? "Checking…" : walletOnlyDemoState === "passed" ? "Blocked" : walletOnlyDemoState === "failed" ? "Check failed" : "Ready to test"}</span><span>{walletOnlyDemoState === "passed" ? "The contract rejected the owner-only withdrawal for missing or invalid PQ approval." : "A read-only call uses the owner address and an empty PQ signature."}</span></div>
-          <button className="button button-primary demo-run" type="button" onClick={() => void runWalletOnlySimulation()} disabled={busy || !account}>{walletOnlyDemoState === "running" ? "Simulating…" : "Simulate stolen wallet"}</button>
+          <div className="demo-card-top"><span className="demo-icon attack-icon" aria-hidden="true">!</span><span className="demo-label">Attack · EVM only</span></div>
+          <h3 id="attack-title">Attacker has your wallet</h3>
+          <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner wallet is available</li><li><span className="check-bad">×</span> PQ guardian approval is missing</li></ul>
+          <div className={"demo-result" + (walletOnlyDemoState === "passed" ? " is-blocked" : walletOnlyDemoState === "failed" ? " is-error" : "")} role="status"><span className="result-word">{walletOnlyDemoState === "running" ? "Checking…" : walletOnlyDemoState === "passed" ? "Blocked" : walletOnlyDemoState === "failed" ? "Not verified" : "Ready to test"}</span><span>{walletOnlyDemoState === "passed" ? "The contract rejected the call because PQ approval was missing or invalid." : "A real eth_call attempts a protected withdrawal with no PQ signature."}</span></div>
+          <button className="button button-primary demo-run" type="button" onClick={() => void runWalletOnlySimulation()} disabled={busy || !account}>{walletOnlyDemoState === "running" ? "Simulating…" : "Simulate attack"}</button>
           {walletOnlyDemoMessage && <p className={"demo-message" + (walletOnlyDemoState === "passed" ? " is-good" : " is-bad")} role={walletOnlyDemoState === "failed" ? "alert" : "status"}>{walletOnlyDemoMessage}</p>}
         </article>
+        <article className="attack-card" aria-labelledby="guardian-only-title">
+          <div className="demo-card-top"><span className="demo-icon attack-icon" aria-hidden="true">!</span><span className="demo-label">Attack · PQ only</span></div>
+          <h3 id="guardian-only-title">Guardian without owner</h3>
+          <ul className="factor-check-list"><li><span className="check-bad">×</span> EVM owner authorization is missing</li><li><span className="check-good">✓</span> Active PQ guardian signs the action</li></ul>
+          <div className={"demo-result" + (guardianOnlyDemoState === "passed" ? " is-blocked" : guardianOnlyDemoState === "failed" ? " is-error" : "")} role="status"><span className="result-word">{guardianOnlyDemoState === "running" ? "Checking…" : guardianOnlyDemoState === "passed" ? "Blocked" : guardianOnlyDemoState === "failed" ? "Not verified" : "Ready to test"}</span><span>{guardianOnlyDemoState === "passed" ? "The contract rejected the valid PQ approval because the caller was not the owner." : "A locally signed action is simulated from a non-owner address."}</span></div>
+          <button className="button button-secondary demo-run" type="button" onClick={() => void runGuardianOnlySimulation()} disabled={busy || !guardianReady || !guardianMatched || !guardianActive}>{guardianOnlyDemoState === "running" ? "Simulating…" : "Simulate guardian alone"}</button>
+          {!guardianReady && <p className="inline-hint">Restore the active guardian before running this simulation.</p>}
+          {guardianOnlyDemoMessage && <p className={"demo-message" + (guardianOnlyDemoState === "passed" ? " is-good" : " is-bad")} role={guardianOnlyDemoState === "failed" ? "alert" : "status"}>{guardianOnlyDemoMessage}</p>}
+        </article>
         <article className="legitimate-card" aria-labelledby="legitimate-title">
-          <div className="demo-card-top"><span className="demo-icon success-icon" aria-hidden="true">✓</span><span className="demo-label">Legitimate owner</span></div>
-          <h3 id="legitimate-title">Both factors approve</h3>
-          <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner address set as sender</li><li><span className={guardianReady && guardianMatched ? "check-good" : "check-pending"}>{guardianReady && guardianMatched ? "✓" : "–"}</span> Active PQ guardian signs exact account payload</li></ul>
-          <div className={"demo-result" + (twoFactorDemoState === "passed" ? " is-authorized" : twoFactorDemoState === "failed" ? " is-error" : "")}><span className="result-word">{twoFactorDemoState === "running" ? "Checking…" : twoFactorDemoState === "passed" ? "Authorized" : twoFactorDemoState === "failed" ? "Not verified" : "Ready to test"}</span><span>{twoFactorDemoState === "passed" ? "A valid two-factor authorization passed read-only simulation." : "Requires the active guardian restored in this tab."}</span></div>
-          <button className="button button-primary demo-run" type="button" onClick={() => void runTwoFactorSimulation()} disabled={busy || !guardianReady || !guardianMatched || !guardianActive}>{twoFactorDemoState === "running" ? "Simulating…" : "Simulate with both factors"}</button>
+          <div className="demo-card-top"><span className="demo-icon success-icon" aria-hidden="true">✓</span><span className="demo-label">Legitimate owner · both factors</span></div>
+          <h3 id="legitimate-title">The owner and guardian approve</h3>
+          <ul className="factor-check-list"><li><span className="check-good">✓</span> EVM owner address is set as the simulated caller</li><li><span className={guardianReady && guardianMatched ? "check-good" : "check-pending"}>{guardianReady && guardianMatched ? "✓" : "–"}</span> Active PQ guardian signs the exact payload</li></ul>
+          <div className={"demo-result" + (twoFactorDemoState === "passed" ? " is-authorized" : twoFactorDemoState === "failed" ? " is-error" : "")}><span className="result-word">{twoFactorDemoState === "running" ? "Checking…" : twoFactorDemoState === "passed" ? "Authorized" : twoFactorDemoState === "failed" ? "Not verified" : "Ready to test"}</span><span>{twoFactorDemoState === "passed" ? "The contract accepted the owner address plus the locally verified PQ signature." : "Requires the active guardian restored in this tab."}</span></div>
+          <button className="button button-primary demo-run" type="button" onClick={() => void runTwoFactorSimulation()} disabled={busy || !guardianReady || !guardianMatched || !guardianActive}>{twoFactorDemoState === "running" ? "Simulating…" : "Simulate authorized action"}</button>
           {!guardianReady && <p className="inline-hint">Restore the active guardian on Overview before running this simulation.</p>}
           {twoFactorDemoMessage && <p className={"demo-message" + (twoFactorDemoState === "passed" ? " is-good" : " is-bad")} role={twoFactorDemoState === "failed" ? "alert" : "status"}>{twoFactorDemoMessage}</p>}
         </article>
       </div>
-      <div className="demo-explainer"><div><strong>What is being simulated?</strong><p>The first call attempts a 1-base-unit withdrawal with no PQ signature. The second signs a same-key guardian update using the live nonce. Both are Arc Mainnet read-only simulations; neither submits a transaction or changes account state.</p></div><span className="read-only-tag">READ-ONLY</span></div>
+      <div className="demo-explainer"><div><strong>What is being simulated?</strong><p>Each result comes from Arc Mainnet <code>eth_call</code>. The owner-only attempt uses the live owner address with no PQ signature; the guardian-only attempt uses a locally verified PQ signature with a different caller; the authorized path combines the owner address and guardian signature. A read-only call does not prove possession of the EVM private key or persist state.</p></div><span className="read-only-tag">READ-ONLY · NO TRANSACTION</span></div>
     </section>
   ) : <LoadingPanel label="Loading account before read-only simulation…" />;
 
@@ -1351,6 +1433,12 @@ function logToActivity(log: RawLog, action: ActivityEntry["action"], amount?: bi
 
 function isOwnerWallet(wallet: ConnectedWallet, owner: Address): boolean {
   return wallet.address.toLowerCase() === owner.toLowerCase();
+}
+
+function getSimulatedNonOwner(owner: Address): Address {
+  const normalized = owner.toLowerCase();
+  const lastNibble = normalized.slice(-1);
+  return getAddress(`${normalized.slice(0, -1)}${lastNibble === "0" ? "1" : "0"}`);
 }
 
 function wipeGuardian(material: GuardianMaterial | null): void {

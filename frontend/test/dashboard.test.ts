@@ -9,6 +9,7 @@ import {
   canSubmitProtectedAction,
   guardianMatchesOnchain,
   runSecurityDemo,
+  verifyGuardianOnlyBlocked,
   verifyWalletOnlyBlocked,
   validateSendRequest,
   type ActivityEntry,
@@ -136,6 +137,28 @@ test("stolen-wallet block can be verified independently before a guardian is loa
     async () => { throw Object.assign(new Error("reverted"), { errorName: "NotOwner" }); },
     (error) => extractContractErrorName(error, q2faAccountAbi),
   ), /unexpected result/);
+});
+
+test("guardian-only demo requires a validly signed action to fail specifically as non-owner", async () => {
+  let simulationCalled = false;
+  const outcome = await verifyGuardianOnlyBlocked(
+    async () => {
+      simulationCalled = true;
+      throw Object.assign(new Error("reverted"), { errorName: "NotOwner" });
+    },
+    (error) => extractContractErrorName(error, q2faAccountAbi),
+  );
+  assert.equal(simulationCalled, true);
+  assert.equal(outcome.guardianOnly, "blocked");
+  assert.equal(outcome.guardianOnlyReason, "EVM owner authorization missing");
+  await assert.rejects(verifyGuardianOnlyBlocked(
+    async () => { throw Object.assign(new Error("reverted"), { errorName: "InvalidPQSignature" }); },
+    (error) => extractContractErrorName(error, q2faAccountAbi),
+  ), /unexpected result/);
+  await assert.rejects(verifyGuardianOnlyBlocked(
+    async () => undefined,
+    (error) => extractContractErrorName(error, q2faAccountAbi),
+  ), /unexpectedly succeeded/);
 });
 
 test("activity entries render action, amount, recipient, and Arc Explorer link", () => {

@@ -117,6 +117,12 @@ export interface WalletOnlyDemoOutcome {
   revertName: "InvalidPQSignatureLength" | "InvalidPQSignature";
 }
 
+export interface GuardianOnlyDemoOutcome {
+  guardianOnly: "blocked";
+  guardianOnlyReason: "EVM owner authorization missing";
+  revertName: "NotOwner";
+}
+
 /** Verifies an actual read-only owner-only call failed specifically at PQ authorization. */
 export async function verifyWalletOnlyBlocked(
   simulateWalletOnly: () => Promise<unknown>,
@@ -139,6 +145,32 @@ export async function verifyWalletOnlyBlocked(
   return {
     walletOnly: "blocked",
     walletOnlyReason: revertName === "InvalidPQSignatureLength" ? "PQ authorization missing" : "PQ authorization invalid",
+    revertName,
+  };
+}
+
+/** Verifies that a valid guardian signature still cannot authorize a non-owner caller. */
+export async function verifyGuardianOnlyBlocked(
+  simulateGuardianOnly: () => Promise<unknown>,
+  errorName: (error: unknown) => string | undefined,
+): Promise<GuardianOnlyDemoOutcome> {
+  let guardianOnlyFailure: unknown;
+  try {
+    await simulateGuardianOnly();
+  } catch (error) {
+    guardianOnlyFailure = error;
+  }
+  if (!guardianOnlyFailure) {
+    throw new Error("The guardian-only simulation unexpectedly succeeded.");
+  }
+
+  const revertName = errorName(guardianOnlyFailure);
+  if (revertName !== "NotOwner") {
+    throw new Error(`The guardian-only simulation had an unexpected result${revertName ? ` (${revertName})` : ""}.`);
+  }
+  return {
+    guardianOnly: "blocked",
+    guardianOnlyReason: "EVM owner authorization missing",
     revertName,
   };
 }

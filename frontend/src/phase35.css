@@ -262,12 +262,12 @@ a { color: var(--q2-cyan); }
 .diagnostic-details code { display: block; margin-top: 5px; overflow-wrap: anywhere; }
 .loading-panel { display: flex; align-items: center; gap: 10px; padding: 35px 0; color: #a8bac4; font-size: .8rem; }
 .loading-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--q2-cyan); }
-.demo-page { max-width: 930px; }
+.demo-page { max-width: 1080px; }
 .demo-equation { margin: -6px 0 16px; }
 .demo-equation > span { display: inline-flex; border-color: #314955; color: #a6bac4; font-size: .66rem; letter-spacing: .02em; text-transform: none; }
 .demo-equation > b { color: #71bbcf; }
 .demo-equation > strong { border: 1px solid #42778a; border-radius: 8px; padding: 7px 10px; color: #d5f7ff; background: #132a34; font-size: .69rem; }
-.demo-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.demo-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 14px; }
 .attack-card, .legitimate-card { min-width: 0; border: 1px solid #5a3a3a; border-radius: 16px; padding: 19px; background: #171719; }
 .legitimate-card { border-color: #315a49; background: #131b19; }
 .demo-card-top { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
@@ -298,6 +298,10 @@ a { color: var(--q2-cyan); }
 .demo-message { margin: 11px 0 0; border-radius: 8px; padding: 10px 11px; font-size: .68rem; line-height: 1.55; overflow-wrap: anywhere; }
 .demo-message.is-good { border: 1px solid #3b6b52; color: #b9e4c8; background: #17281e; }
 .demo-message.is-bad { border: 1px solid #694643; color: #f1c2bc; background: #2a1d1d; }
+@media (max-width: 1040px) {
+  .demo-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .legitimate-card { grid-column: 1 / -1; }
+}
 .docs-page { max-width: 1040px; }
 .docs-page > .page-intro { max-width: 700px; }
 .docs-flow { display: grid; grid-template-columns: minmax(0,1fr) 24px minmax(0,1fr) 24px minmax(0,1fr); align-items: center; gap: 9px; margin: 0 0 16px; border: 1px solid #2a414d; border-radius: 13px; padding: 14px; background: #101920; }
@@ -405,6 +409,7 @@ a { color: var(--q2-cyan); }
   .activity-title-row { align-items: flex-start; flex-direction: column; gap: 3px; }
   .activity-amount { text-align: left; }
   .demo-grid { grid-template-columns: minmax(0,1fr); }
+  .legitimate-card { grid-column: auto; }
   .demo-equation { gap: 5px; }
   .demo-equation > span, .demo-equation > strong { font-size: .58rem; }
   .attack-card, .legitimate-card { padding: 16px 14px; }

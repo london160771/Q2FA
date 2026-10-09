@@ -166,6 +166,16 @@ contract Q2FAAccountTest {
         require(account.nonce() == 0, "nonce changed after amount tampering");
     }
 
+    function testChangedDeadlineFails() public {
+        bytes memory signature = _signature();
+        _expect(Q2FAAccount.Action.Withdraw, _addressSubject(RECIPIENT), 1, 0, 1_000, signature, true);
+
+        vm.expectRevert(Q2FAAccount.InvalidPQSignature.selector);
+        vm.prank(OWNER);
+        account.withdraw(RECIPIENT, 1, 1_001, signature);
+        require(account.nonce() == 0, "deadline tampering consumed nonce");
+    }
+
     function testChangedActionFails() public {
         bytes memory signature = _signature();
         _expect(Q2FAAccount.Action.ChangeOwner, _addressSubject(RECIPIENT), 0, 0, 1_000, signature, true);
@@ -191,6 +201,17 @@ contract Q2FAAccountTest {
         vm.expectRevert(Q2FAAccount.InvalidPQSignature.selector);
         vm.prank(OWNER);
         account.withdraw(RECIPIENT, 1, 1_000, signature);
+    }
+
+    function testSignatureForAnotherQ2FAAccountFails() public {
+        bytes memory signature = _signature();
+        _expect(Q2FAAccount.Action.Withdraw, _addressSubject(RECIPIENT), 1, 0, 1_000, signature, true);
+        Q2FAAccount otherAccount = new Q2FAAccount(OWNER, GUARDIAN, address(0));
+
+        vm.expectRevert(Q2FAAccount.InvalidPQSignature.selector);
+        vm.prank(OWNER);
+        otherAccount.withdraw(RECIPIENT, 1, 1_000, signature);
+        require(account.nonce() == 0 && otherAccount.nonce() == 0, "cross-account authorization changed nonce");
     }
 
     function testWrongChainDomainFails() public {
@@ -264,6 +285,17 @@ contract Q2FAAccountTest {
         require(account.owner() == OWNER && account.nonce() == 0, "owner changed without guardian");
     }
 
+    function testValidGuardianWithoutOwnerCannotChangeOwner() public {
+        bytes memory signature = _signature();
+        address nextOwner = address(0x5151);
+        _expect(Q2FAAccount.Action.ChangeOwner, _addressSubject(nextOwner), 0, 0, 1_000, signature, true);
+
+        vm.expectRevert(Q2FAAccount.NotOwner.selector);
+        vm.prank(ATTACKER);
+        account.changeOwner(nextOwner, 1_000, signature);
+        require(account.owner() == OWNER && account.nonce() == 0, "guardian-only owner change succeeded");
+    }
+
     function testZeroOwnerRejected() public {
         vm.expectRevert(Q2FAAccount.ZeroOwner.selector);
         vm.prank(OWNER);
@@ -282,6 +314,35 @@ contract Q2FAAccountTest {
 
         require(account.guardianKey() == NEW_GUARDIAN, "guardian not changed");
         require(account.nonce() == 1, "guardian-change nonce");
+    }
+
+    function testOwnerAloneCannotChangeGuardian() public {
+        vm.expectRevert(abi.encodeWithSelector(Q2FAAccount.InvalidPQSignatureLength.selector, 0));
+        vm.prank(OWNER);
+        account.changeGuardian(NEW_GUARDIAN, 1_000, new bytes(0));
+        require(account.guardianKey() == GUARDIAN && account.nonce() == 0, "owner-only guardian change succeeded");
+    }
+
+    function testValidGuardianWithoutOwnerCannotChangeGuardian() public {
+        bytes memory signature = _signature();
+        _expect(Q2FAAccount.Action.ChangeGuardian, NEW_GUARDIAN, 0, 0, 1_000, signature, true);
+
+        vm.expectRevert(Q2FAAccount.NotOwner.selector);
+        vm.prank(ATTACKER);
+        account.changeGuardian(NEW_GUARDIAN, 1_000, signature);
+        require(account.guardianKey() == GUARDIAN && account.nonce() == 0, "guardian-only rotation succeeded");
+    }
+
+    function testGuardianChangeAuthorizationCannotBeReplayed() public {
+        bytes memory signature = _signature();
+        _expect(Q2FAAccount.Action.ChangeGuardian, NEW_GUARDIAN, 0, 0, 1_000, signature, true);
+
+        vm.prank(OWNER);
+        account.changeGuardian(NEW_GUARDIAN, 1_000, signature);
+        vm.expectRevert(Q2FAAccount.InvalidPQSignature.selector);
+        vm.prank(OWNER);
+        account.changeGuardian(NEW_GUARDIAN, 1_000, signature);
+        require(account.guardianKey() == NEW_GUARDIAN && account.nonce() == 1, "guardian replay changed state");
     }
 
     function testNewGuardianCannotInstallItself() public {
