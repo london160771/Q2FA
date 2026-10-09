@@ -26,7 +26,8 @@ a { color: var(--q2-cyan); }
 .sidebar { z-index: 30; display: flex; min-width: 0; min-height: 0; flex-direction: column; border-right: 1px solid var(--line); padding: 27px 17px 17px; background: #0c1218; }
 .sidebar-brand-lockup { padding: 0 10px; }
 .brand { display: inline-flex; align-items: center; gap: 11px; color: var(--ink); text-decoration: none; }
-.brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid #38768a; border-radius: 12px; color: #081217; background: var(--q2-cyan); font-size: 1.1rem; font-weight: 850; }
+.brand-mark { width: 38px; height: 38px; display: grid; flex: 0 0 38px; place-items: center; border: 1px solid #315362; border-radius: 12px; padding: 1px; background: #101820; }
+.brand-mark-image { display: block; width: 34px; height: 34px; }
 .brand-wordmark { font-size: 1.12rem; font-weight: 790; letter-spacing: .045em; }
 .brand-descriptor { display: block; margin: 9px 0 0 49px; color: #8295a2; font-size: .67rem; }
 .sidebar-rule { height: 1px; margin: 25px 7px 21px; background: var(--line); }

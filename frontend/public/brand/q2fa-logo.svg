@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 512" role="img" aria-labelledby="title desc">
+  <title id="title">Q2FA</title>
+  <desc id="desc">Q2FA post-quantum two-factor smart-account security.</desc>
+  <g transform="translate(0 0)">
+    <path d="M330 357 418 439" fill="none" stroke="#405363" stroke-width="45" stroke-linecap="round" />
+    <path d="M330 357a155 155 0 0 1-234-182" fill="none" stroke="#405363" stroke-width="45" stroke-linecap="round" />
+    <path d="M128 126a155 155 0 0 1 232 204" fill="none" stroke="#80e6ff" stroke-width="45" stroke-linecap="round" />
+    <path d="M240 170c9 46 24 61 70 70-46 9-61 24-70 70-9-46-24-61-70-70 46-9 61-24 70-70Z" fill="#e9f1f7" />
+  </g>
+  <text x="505" y="304" fill="#e9f1f7" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="250" font-weight="750" letter-spacing="13">Q2FA</text>
+  <text x="520" y="390" fill="#9aabb8" font-family="Inter, 'Segoe UI', Arial, sans-serif" font-size="48" font-weight="600" letter-spacing="14">TWO-FACTOR  ·  POST-QUANTUM</text>
+</svg>

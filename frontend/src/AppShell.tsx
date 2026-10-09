@@ -82,7 +82,7 @@ export function AppShell({ wallet, accountOwner, accountAddress, busy, error, no
       >
         <div className="sidebar-brand-lockup">
           <NavLink className="brand" to="/overview" aria-label="Q2FA overview" onClick={() => isMobile && closeMobileNav()}>
-            <span className="brand-mark" aria-hidden="true">Q</span>
+            <span className="brand-mark" aria-hidden="true"><img className="brand-mark-image" src="/brand/q2fa-mark.svg" alt="" width="34" height="34" /></span>
             <span className="brand-wordmark">Q2FA</span>
           </NavLink>
           <span className="brand-descriptor">Post-quantum protected account</span>
